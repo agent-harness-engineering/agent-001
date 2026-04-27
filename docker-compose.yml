@@ -1,0 +1,10 @@
+services:
+  agent-001:
+    build: .
+    ports:
+      - "8088:8088"
+    env_file:
+      - .env
+    volumes:
+      - ./memory:/app/memory
+    restart: unless-stopped
