@@ -105,6 +105,72 @@ async def dispatch_to_endpoint(
 # Routes
 # ---------------------------------------------------------------------------
 
+async def handle_chat(request: web.Request) -> web.Response:
+    """Chat endpoint: accepts a message + history, dispatches to model with 4M governance."""
+    try:
+        body = await request.json()
+    except json.JSONDecodeError:
+        return web.json_response({"error": "Invalid JSON"}, status=400)
+
+    message = body.get("message", "").strip()
+    if not message:
+        return web.json_response({"error": "Required field: message"}, status=400)
+
+    history = body.get("history", [])
+    state = request.app["state"]
+
+    # Select endpoint
+    if not state["endpoints"]:
+        return web.json_response({
+            "error": "No model endpoints registered. Use /endpoints to register one.",
+        }, status=503)
+
+    endpoint_name = next(iter(state["endpoints"]))
+    endpoint = state["endpoints"][endpoint_name]
+
+    # Build messages: system prompt + conversation history
+    messages = [{"role": "system", "content": state["system_prompt"]}]
+    for entry in history:
+        role = entry.get("role", "user")
+        content = entry.get("content", "")
+        if role in ("user", "assistant") and content:
+            messages.append({"role": role, "content": content})
+
+    # If the last history entry isn't the current message, add it
+    if not messages or messages[-1].get("content") != message:
+        messages.append({"role": "user", "content": message})
+
+    url = endpoint["url"].rstrip("/") + "/chat/completions"
+    headers = {"Content-Type": "application/json"}
+    if endpoint.get("api_key"):
+        headers["Authorization"] = f"Bearer {endpoint['api_key']}"
+
+    payload = {
+        "model": endpoint.get("model", endpoint["name"]),
+        "messages": messages,
+        "temperature": endpoint.get("temperature", 0.7),
+        "max_tokens": endpoint.get("max_tokens", 2048),
+    }
+
+    timeout = aiohttp.ClientTimeout(total=endpoint.get("timeout_seconds", 300))
+
+    try:
+        async with request.app["http_session"].post(
+            url, json=payload, headers=headers, timeout=timeout, ssl=False
+        ) as resp:
+            if resp.status != 200:
+                error_body = await resp.text()
+                log.error("Chat dispatch failed: %s %s", resp.status, error_body)
+                return web.json_response({"error": f"Model returned {resp.status}"}, status=502)
+            data = await resp.json()
+            choices = data.get("choices", [])
+            reply = choices[0]["message"]["content"] if choices else "(no response)"
+            return web.json_response({"response": reply, "endpoint": endpoint_name})
+    except aiohttp.ClientError as e:
+        log.error("Chat connection error: %s", e)
+        return web.json_response({"error": f"Connection error: {e}"}, status=502)
+
+
 async def handle_health(request: web.Request) -> web.Response:
     """Health check endpoint."""
     return web.json_response({
@@ -379,6 +445,9 @@ def create_app() -> web.Application:
     app.router.add_get("/health", handle_health)
     app.router.add_get("/status", handle_status)
 
+    # Chat
+    app.router.add_post("/chat", handle_chat)
+
     # Endpoint management
     app.router.add_get("/endpoints", handle_endpoints_list)
     app.router.add_post("/endpoints", handle_endpoint_register)
@@ -389,6 +458,11 @@ def create_app() -> web.Application:
 
     # MCP
     app.router.add_get("/mcp/tools", handle_mcp_tools)
+
+    # Static files (chat UI) — must be last
+    static_dir = BASE_DIR / "static"
+    app.router.add_static("/static/", static_dir)
+    app.router.add_get("/", lambda r: web.FileResponse(static_dir / "index.html"))
 
     return app
 
