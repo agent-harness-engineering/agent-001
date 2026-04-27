@@ -1,1 +1,15 @@
-{}
+{
+  "gemma": {
+    "name": "gemma",
+    "url": "http://100.125.50.95:1237/v1",
+    "model": "gemma-4-26b-a4b-it@q4_k_m",
+    "api_key": "",
+    "capabilities": [
+      "chat"
+    ],
+    "temperature": 0.7,
+    "max_tokens": 2048,
+    "timeout_seconds": 300,
+    "registered_at": "2026-04-27T12:02:38.938633+00:00"
+  }
+}
