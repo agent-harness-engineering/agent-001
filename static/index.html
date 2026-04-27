@@ -27,6 +27,15 @@
             font-size: 16px;
             font-weight: 600;
             color: #60a5fa;
+            cursor: pointer;
+            user-select: none;
+            transition: color 0.15s;
+        }
+        header h1:hover {
+            color: #93c5fd;
+        }
+        header h1:active {
+            color: #3b82f6;
         }
         .status-dot {
             width: 10px; height: 10px; border-radius: 50%; background: #888;
@@ -170,7 +179,7 @@
 <body>
     <header>
         <div class="status-dot" id="status-dot"></div>
-        <h1>Agent-001</h1>
+        <h1 onclick="hardReload()" title="Click to reload (clear cache)">Agent-001</h1>
         <span class="model-badge" id="model-badge">connecting...</span>
     </header>
     <div id="messages"></div>
@@ -301,6 +310,13 @@
                 statusDot.className = 'status-dot error';
                 modelBadge.textContent = 'offline';
             }
+        }
+
+        function hardReload() {
+            if ('caches' in window) {
+                caches.keys().then(names => names.forEach(n => caches.delete(n)));
+            }
+            location.reload(true);
         }
 
         checkStatus();
