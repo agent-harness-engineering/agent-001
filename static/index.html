@@ -74,7 +74,25 @@
             color: #d0d0d0;
             border-bottom-left-radius: 4px;
             border: 1px solid #2a2a4a;
+            position: relative;
         }
+        .copy-btn {
+            position: absolute;
+            top: 6px;
+            right: 6px;
+            background: #2a2a4a;
+            border: 1px solid #3a3a5a;
+            color: #888;
+            border-radius: 4px;
+            padding: 2px 6px;
+            font-size: 11px;
+            cursor: pointer;
+            opacity: 0;
+            transition: opacity 0.15s;
+        }
+        .msg.assistant:hover .copy-btn { opacity: 1; }
+        .copy-btn:hover { background: #3a3a5a; color: #ccc; }
+        .copy-btn.copied { color: #4ade80; }
         .msg.assistant p { margin-bottom: 8px; }
         .msg.assistant p:last-child { margin-bottom: 0; }
         .msg.assistant pre {
@@ -188,6 +206,21 @@
             div.className = `msg ${role}`;
             if (role === 'assistant') {
                 div.innerHTML = marked.parse(content);
+                div.dataset.raw = content;
+                const copyBtn = document.createElement('button');
+                copyBtn.className = 'copy-btn';
+                copyBtn.textContent = 'Copy';
+                copyBtn.onclick = () => {
+                    navigator.clipboard.writeText(content).then(() => {
+                        copyBtn.textContent = 'Copied';
+                        copyBtn.classList.add('copied');
+                        setTimeout(() => {
+                            copyBtn.textContent = 'Copy';
+                            copyBtn.classList.remove('copied');
+                        }, 1500);
+                    });
+                };
+                div.appendChild(copyBtn);
             } else {
                 div.textContent = content;
             }
