@@ -7,6 +7,7 @@ as system context for inference dispatch.
 import json
 import logging
 import os
+import ssl
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -392,5 +393,20 @@ def create_app() -> web.Application:
     return app
 
 
+def make_ssl_context() -> ssl.SSLContext | None:
+    """Load Tailscale TLS certs if available."""
+    cert_dir = BASE_DIR / "certs"
+    cert_file = cert_dir / "thinxai-workstation.crt"
+    key_file = cert_dir / "thinxai-workstation.key"
+    if cert_file.exists() and key_file.exists():
+        ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        ctx.load_cert_chain(str(cert_file), str(key_file))
+        log.info("TLS enabled via Tailscale certs")
+        return ctx
+    log.warning("No TLS certs found, running plain HTTP")
+    return None
+
+
 if __name__ == "__main__":
-    web.run_app(create_app(), host=HOST, port=PORT)
+    ssl_ctx = make_ssl_context()
+    web.run_app(create_app(), host=HOST, port=PORT, ssl_context=ssl_ctx)
