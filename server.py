@@ -35,6 +35,7 @@ HOST = os.getenv("AGENT001_HOST", "0.0.0.0")
 PORT = int(os.getenv("AGENT001_PORT", "8095"))
 MEMORY_DIR = BASE_DIR / "memory"
 ENDPOINTS_FILE = MEMORY_DIR / "endpoints.json"
+HISTORY_DIR = BASE_DIR / "history"
 
 # 4M module files
 GOVERNANCE_MODULES = ["mission.md", "mind.md", "morals.md", "memory_module.md"]
@@ -180,10 +181,30 @@ async def handle_chat(request: web.Request) -> web.Response:
             data = await resp.json()
             choices = data.get("choices", [])
             reply = choices[0]["message"]["content"] if choices else "(no response)"
+            _log_chat(request, message, reply, endpoint_name)
             return web.json_response({"response": reply, "endpoint": endpoint_name})
     except aiohttp.ClientError as e:
         log.error("Chat connection error: %s", e)
         return web.json_response({"error": f"Connection error: {e}"}, status=502)
+
+
+def _log_chat(request: web.Request, user_msg: str, assistant_reply: str, endpoint: str) -> None:
+    """Append a chat turn to history/chat-YYYY-MM-DD.jsonl."""
+    try:
+        HISTORY_DIR.mkdir(parents=True, exist_ok=True)
+        date = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        log_file = HISTORY_DIR / f"chat-{date}.jsonl"
+        entry = {
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "remote": request.remote,
+            "endpoint": endpoint,
+            "user": user_msg,
+            "assistant": assistant_reply,
+        }
+        with log_file.open("a") as f:
+            f.write(json.dumps(entry) + "\n")
+    except Exception as exc:
+        log.warning("Failed to write chat history: %s", exc)
 
 
 async def handle_health(request: web.Request) -> web.Response:

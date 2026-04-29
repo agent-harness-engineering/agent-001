@@ -7,4 +7,5 @@ services:
       - .env
     volumes:
       - ./memory:/app/memory
+      - ./history:/app/history
     restart: unless-stopped
