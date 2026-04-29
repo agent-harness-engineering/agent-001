@@ -1106,7 +1106,13 @@ def create_app() -> web.Application:
     # Static files (chat UI) — must be last
     static_dir = BASE_DIR / "static"
     app.router.add_static("/static/", static_dir)
-    app.router.add_get("/", lambda r: web.FileResponse(static_dir / "index.html"))
+
+    async def _index(r: web.Request) -> web.FileResponse:
+        return web.FileResponse(
+            static_dir / "index.html",
+            headers={"Cache-Control": "no-cache, no-store, must-revalidate", "Pragma": "no-cache"},
+        )
+    app.router.add_get("/", _index)
 
     return app
 
