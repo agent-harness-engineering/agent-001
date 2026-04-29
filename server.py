@@ -2,17 +2,27 @@
 
 4M governed. Loads governance modules at startup and injects them
 as system context for inference dispatch.
+
+P0 safety layer: ToolProxy → PermissionGate → AuditStore → GovernanceGuard
+wired via /v1/process, /v1/audit, and /v1/health endpoints.
 """
 
 import json
 import logging
 import os
 import ssl
+import uuid
+from dataclasses import asdict
 from datetime import datetime, timezone
 from pathlib import Path
 
 import aiohttp
 from aiohttp import web
+
+from audit import AuditStore, AuditEvent
+from gates import PermissionGate, PermissionPolicy, PermissionDecision
+from governance import GovernanceGuard
+from proxy import ToolProxy, CanonicalToolCall, ValidationError
 
 logging.basicConfig(
     level=logging.INFO,
@@ -28,6 +38,11 @@ ENDPOINTS_FILE = MEMORY_DIR / "endpoints.json"
 
 # 4M module files
 GOVERNANCE_MODULES = ["mission.md", "mind.md", "morals.md", "memory_module.md"]
+
+# P0 configuration
+_AUDIT_LOG_REL = os.getenv("MAESTRO_AUDIT_LOG", "audit/maestro-audit.jsonl")
+AUDIT_LOG_PATH = BASE_DIR / _AUDIT_LOG_REL
+MAESTRO_DEFAULT_POLICY = os.getenv("MAESTRO_DEFAULT_POLICY", "default")
 
 
 # ---------------------------------------------------------------------------
@@ -404,6 +419,220 @@ async def handle_mcp_tools(request: web.Request) -> web.Response:
 
 
 # ---------------------------------------------------------------------------
+# P0 endpoints
+# ---------------------------------------------------------------------------
+
+async def handle_v1_process(request: web.Request) -> web.Response:
+    """POST /v1/process — run model output through P0 safety pipeline.
+
+    Request body::
+
+        {
+            "session_id": "...",
+            "model_output": "..." | {...},
+            "model_format": "auto" | "openai" | "anthropic" | "action_tag",
+            "agent_id": "..."
+        }
+
+    Response 200::
+
+        {
+            "tool_calls": [...],   # approved CanonicalToolCall dicts
+            "blocked":   [...],   # ValidationError or denied CanonicalToolCall dicts
+            "decisions": [...]    # PermissionDecision dicts
+        }
+
+    Pipeline: ToolProxy → PermissionGate → AuditStore.
+    GovernanceGuard is consulted before any write is allowed.
+    """
+    try:
+        body = await request.json()
+    except json.JSONDecodeError:
+        return web.json_response({"error": "Invalid JSON"}, status=400)
+
+    session_id = body.get("session_id", f"sess_{uuid.uuid4().hex[:8]}")
+    model_output = body.get("model_output")
+    model_format = body.get("model_format", "auto")
+    agent_id = body.get("agent_id", "agent-001")
+
+    if model_output is None:
+        return web.json_response({"error": "Required field: model_output"}, status=400)
+
+    p0 = request.app["p0"]
+    tool_proxy: ToolProxy = p0["tool_proxy"]
+    permission_gate: PermissionGate = p0["permission_gate"]
+    audit_store: AuditStore = p0["audit_store"]
+    governance_guard: GovernanceGuard = p0["governance_guard"]
+
+    # Step 1: ToolProxy — parse and validate model output
+    proxy_results = tool_proxy.process(model_output, source_hint=model_format)
+
+    tool_calls_out = []
+    blocked_out = []
+    decisions_out = []
+
+    for item in proxy_results:
+        if isinstance(item, ValidationError):
+            # Record validation error to audit
+            audit_store.record(AuditEvent(
+                event_id=str(uuid.uuid4()),
+                timestamp=datetime.now(timezone.utc).isoformat(),
+                event_type="validation_error",
+                session_id=session_id,
+                agent_id=agent_id,
+                tool_name=None,
+                tool_call_id=None,
+                decision="deny",
+                outcome="blocked",
+                details={
+                    "error_type": item.error_type,
+                    "message": item.message,
+                    "raw": item.raw[:512],  # truncate for log safety
+                },
+            ))
+            blocked_out.append({
+                "type": "validation_error",
+                "error_type": item.error_type,
+                "message": item.message,
+                "timestamp": item.timestamp,
+            })
+            continue
+
+        # item is a CanonicalToolCall
+        call: CanonicalToolCall = item
+
+        # Step 2: GovernanceGuard check for write-like operations
+        # For write operations we do a governance guard check first
+        # (the guard will audit its own denials internally)
+        if call.tool_name.startswith("write") or "write" in call.tool_name.lower():
+            target = call.parameters.get("path", call.parameters.get("file", ""))
+            if target and not governance_guard.check_write(target, session_id=session_id):
+                decision = PermissionDecision.deny(
+                    tool_name=call.tool_name,
+                    tool_call_id=call.id,
+                    reason="governance_guard",
+                    channel="system",
+                    approver="system",
+                )
+                decisions_out.append(asdict(decision))
+                blocked_out.append({
+                    "type": "governance_blocked",
+                    "tool_name": call.tool_name,
+                    "tool_call_id": call.id,
+                    "reason": "governance_guard: write to protected path denied",
+                    "timestamp": decision.timestamp,
+                })
+                continue
+
+        # Step 3: PermissionGate evaluation
+        decision: PermissionDecision = permission_gate.evaluate(
+            tool_name=call.tool_name,
+            tool_call_id=call.id,
+            parameters=call.parameters,
+        )
+
+        # Step 4: Record tool_call event to audit
+        audit_store.record(AuditEvent(
+            event_id=str(uuid.uuid4()),
+            timestamp=datetime.now(timezone.utc).isoformat(),
+            event_type="tool_call",
+            session_id=session_id,
+            agent_id=agent_id,
+            tool_name=call.tool_name,
+            tool_call_id=call.id,
+            decision=decision.action,
+            outcome="success" if decision.action == "allow" else "blocked",
+            details={
+                "source": call.source,
+                "parameters": call.parameters,
+                "gate_reason": decision.reason,
+                "gate_channel": decision.channel,
+            },
+        ))
+
+        decisions_out.append(asdict(decision))
+
+        if decision.action == "allow":
+            tool_calls_out.append({
+                "id": call.id,
+                "tool_name": call.tool_name,
+                "parameters": call.parameters,
+                "source": call.source,
+                "timestamp": call.timestamp,
+            })
+        else:
+            blocked_out.append({
+                "type": "permission_denied",
+                "tool_name": call.tool_name,
+                "tool_call_id": call.id,
+                "reason": decision.reason,
+                "timestamp": decision.timestamp,
+            })
+
+    return web.json_response({
+        "tool_calls": tool_calls_out,
+        "blocked": blocked_out,
+        "decisions": decisions_out,
+    })
+
+
+async def handle_v1_audit(request: web.Request) -> web.Response:
+    """GET /v1/audit?session_id=X&event_type=Y&limit=50
+
+    Query the audit log. All parameters optional.
+    """
+    session_id = request.rel_url.query.get("session_id") or None
+    event_type = request.rel_url.query.get("event_type") or None
+    try:
+        limit = int(request.rel_url.query.get("limit", "50"))
+    except (ValueError, TypeError):
+        limit = 50
+
+    audit_store: AuditStore = request.app["p0"]["audit_store"]
+    events = audit_store.query(
+        session_id=session_id,
+        event_type=event_type,
+        limit=limit,
+    )
+
+    return web.json_response({
+        "events": [asdict(e) for e in events],
+    })
+
+
+async def handle_v1_health(request: web.Request) -> web.Response:
+    """GET /v1/health — component-level liveness check."""
+    p0 = request.app["p0"]
+    components = {}
+
+    # proxy: always available after startup
+    components["proxy"] = "ok" if p0.get("tool_proxy") is not None else "unavailable"
+
+    # gate: always available after startup
+    components["gate"] = "ok" if p0.get("permission_gate") is not None else "unavailable"
+
+    # audit: check log parent dir is writable
+    audit_store: AuditStore = p0.get("audit_store")
+    if audit_store is not None:
+        try:
+            audit_store.log_path.parent.mkdir(parents=True, exist_ok=True)
+            components["audit"] = "ok"
+        except Exception:
+            components["audit"] = "error"
+    else:
+        components["audit"] = "unavailable"
+
+    # governance: check guard is initialised
+    components["governance"] = "ok" if p0.get("governance_guard") is not None else "unavailable"
+
+    overall = "ok" if all(v == "ok" for v in components.values()) else "degraded"
+    return web.json_response({
+        "status": overall,
+        "components": components,
+    })
+
+
+# ---------------------------------------------------------------------------
 # App lifecycle
 # ---------------------------------------------------------------------------
 
@@ -423,11 +652,115 @@ async def on_startup(app: web.Application) -> None:
     # HTTP session for outbound requests to model endpoints
     app["http_session"] = aiohttp.ClientSession()
 
+    # -----------------------------------------------------------------------
+    # Initialise P0 safety components
+    # -----------------------------------------------------------------------
+    audit_store = AuditStore(AUDIT_LOG_PATH)
+
+    governance_guard = GovernanceGuard(repo_root=BASE_DIR, audit_store=audit_store)
+
+    # Tool registry: populated from endpoints.json tool definitions (if present).
+    # Falls back to empty registry — every unknown call is a ValidationError.
+    tool_registry: dict = {}
+    tool_registry_file = MEMORY_DIR / "tool_registry.json"
+    if tool_registry_file.exists():
+        try:
+            tool_registry = json.loads(tool_registry_file.read_text())
+            log.info("Loaded tool registry: %d tools", len(tool_registry))
+        except json.JSONDecodeError:
+            log.warning("Corrupt tool_registry.json — starting with empty registry")
+
+    # Permission policy: load from file if MAESTRO_DEFAULT_POLICY is a path,
+    # else use the built-in default.
+    if MAESTRO_DEFAULT_POLICY != "default" and Path(MAESTRO_DEFAULT_POLICY).exists():
+        try:
+            policy_data = json.loads(Path(MAESTRO_DEFAULT_POLICY).read_text())
+            permission_policy = PermissionPolicy.from_dict(policy_data)
+            log.info("Loaded permission policy from %s", MAESTRO_DEFAULT_POLICY)
+        except Exception as exc:
+            log.warning("Failed to load policy from %s: %s — using default", MAESTRO_DEFAULT_POLICY, exc)
+            permission_policy = PermissionPolicy.default()
+    else:
+        permission_policy = PermissionPolicy.default()
+
+    # Wire audit callbacks
+    def gate_audit_callback(decision: PermissionDecision) -> None:
+        audit_store.record(AuditEvent(
+            event_id=str(uuid.uuid4()),
+            timestamp=datetime.now(timezone.utc).isoformat(),
+            event_type="permission_decision",
+            session_id="system",
+            agent_id="permission_gate",
+            tool_name=decision.tool_name,
+            tool_call_id=decision.tool_call_id,
+            decision=decision.action,
+            outcome="allow" if decision.action == "allow" else "blocked",
+            details={
+                "reason": decision.reason,
+                "channel": decision.channel,
+                "approver": decision.approver,
+            },
+        ))
+
+    def proxy_audit_callback(result: CanonicalToolCall | ValidationError) -> None:
+        if isinstance(result, CanonicalToolCall):
+            audit_store.record(AuditEvent(
+                event_id=str(uuid.uuid4()),
+                timestamp=datetime.now(timezone.utc).isoformat(),
+                event_type="tool_call",
+                session_id="system",
+                agent_id="tool_proxy",
+                tool_name=result.tool_name,
+                tool_call_id=result.id,
+                decision=None,
+                outcome="parsed",
+                details={"source": result.source},
+            ))
+        else:
+            audit_store.record(AuditEvent(
+                event_id=str(uuid.uuid4()),
+                timestamp=datetime.now(timezone.utc).isoformat(),
+                event_type="validation_error",
+                session_id="system",
+                agent_id="tool_proxy",
+                tool_name=None,
+                tool_call_id=None,
+                decision="deny",
+                outcome="blocked",
+                details={"error_type": result.error_type, "message": result.message},
+            ))
+
+    permission_gate = PermissionGate(
+        policy=permission_policy,
+        channels=[],  # no interactive TTY in server context; fail-closed on escalate
+        audit_callback=gate_audit_callback,
+    )
+
+    tool_proxy = ToolProxy(
+        tool_registry=tool_registry,
+        audit_callback=proxy_audit_callback,
+    )
+
+    app["p0"] = {
+        "audit_store": audit_store,
+        "governance_guard": governance_guard,
+        "tool_proxy": tool_proxy,
+        "permission_gate": permission_gate,
+        "permission_policy": permission_policy,
+        "tool_registry": tool_registry,
+    }
+
     log.info(
         "Agent-001 v0.2.0 started on %s:%s | governance: %d chars | endpoints: %s",
         HOST, PORT,
         len(system_prompt),
         list(endpoints.keys()) or "(none)",
+    )
+    log.info(
+        "P0 safety layer active | audit_log: %s | tool_registry: %d tools | policy: %s",
+        AUDIT_LOG_PATH,
+        len(tool_registry),
+        MAESTRO_DEFAULT_POLICY,
     )
 
 
@@ -458,6 +791,11 @@ def create_app() -> web.Application:
 
     # MCP
     app.router.add_get("/mcp/tools", handle_mcp_tools)
+
+    # P0 safety layer
+    app.router.add_post("/v1/process", handle_v1_process)
+    app.router.add_get("/v1/audit", handle_v1_audit)
+    app.router.add_get("/v1/health", handle_v1_health)
 
     # Static files (chat UI) — must be last
     static_dir = BASE_DIR / "static"
