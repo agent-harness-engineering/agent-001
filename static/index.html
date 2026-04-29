@@ -591,6 +591,8 @@
     <script>
         // ── Session store (localStorage) ──────────────────────────────────
         const STORE_KEY = 'agent001_sessions';
+        const AGENT_SESSIONS_KEY = 'agent001_agent_sessions';   // agent_id → session_id
+        const FOLDED_RESULTS_KEY = 'agent001_folded_results';   // set of agent_ids whose result was folded
 
         function loadStore() {
             try { return JSON.parse(localStorage.getItem(STORE_KEY)) || {}; } catch { return {}; }
@@ -602,6 +604,25 @@
         let store = loadStore();
         let currentSessionId = null;
         let conversationHistory = [];
+
+        // agent_id → session_id mapping (persistent so it survives page reload)
+        let _agentSessions = (() => {
+            try { return JSON.parse(localStorage.getItem(AGENT_SESSIONS_KEY)) || {}; } catch { return {}; }
+        })();
+        function _saveAgentSessions() {
+            localStorage.setItem(AGENT_SESSIONS_KEY, JSON.stringify(_agentSessions));
+        }
+
+        // Set of agent_ids whose result has already been folded into chat context
+        let _foldedResults = new Set((() => {
+            try { return JSON.parse(localStorage.getItem(FOLDED_RESULTS_KEY)) || []; } catch { return []; }
+        })());
+        function _saveFoldedResults() {
+            // Cap at 200 most recent so localStorage doesn't grow unbounded
+            const arr = Array.from(_foldedResults).slice(-200);
+            _foldedResults = new Set(arr);
+            localStorage.setItem(FOLDED_RESULTS_KEY, JSON.stringify(arr));
+        }
 
         function genId() {
             return 'sess_' + Date.now() + '_' + Math.random().toString(36).slice(2, 6);
@@ -815,6 +836,17 @@
                     injectSystemMessage({ level: 'success', message: `Agent \`${data.agent_id}\` spawned (${type}) — watch Agents tab` });
                     addJobCard(data.agent_id, type, prompt, 'queued');
                     connectAgentSSE(data.agent_id);
+                    // Bind agent to current session and seed chat history so the model
+                    // is aware that an agent is doing work on its behalf
+                    _agentSessions[data.agent_id] = currentSessionId;
+                    _saveAgentSessions();
+                    const ack = `[Spawning ${type} agent \`${data.agent_id}\`. Task: ${prompt}. Result will be folded into this conversation when the agent completes.]`;
+                    conversationHistory.push({ role: 'user', content: text });
+                    conversationHistory.push({ role: 'assistant', content: ack });
+                    if (currentSessionId && store[currentSessionId]) {
+                        store[currentSessionId].messages.push({ role: 'assistant', content: ack });
+                        saveStore(store);
+                    }
                 } else {
                     injectSystemMessage({ level: 'error', message: `Spawn failed: ${data.error || 'check Agents tab — no endpoint?'}` });
                 }
@@ -913,6 +945,10 @@
                 if (data.agent_id) {
                     addJobCard(data.agent_id, agent_type, prompt, 'queued');
                     connectAgentSSE(data.agent_id);
+                    if (currentSessionId) {
+                        _agentSessions[data.agent_id] = currentSessionId;
+                        _saveAgentSessions();
+                    }
                 } else {
                     alert(data.error || 'Spawn failed');
                 }
@@ -967,6 +1003,39 @@
             if (el) el.textContent = text;
         }
 
+        // Fold a completed agent's result back into the chat session that spawned it.
+        // Idempotent — uses _foldedResults to dedupe across SSE done + polling.
+        async function foldAgentResult(agent_id) {
+            if (_foldedResults.has(agent_id)) return;
+            const sessionId = _agentSessions[agent_id];
+            if (!sessionId || !store[sessionId]) return;   // not bound to any session, or session deleted
+            // Fetch the canonical record from disk (more reliable than reconstructing from SSE state)
+            let record = null;
+            try {
+                const d = await fetch('/api/agents').then(r => r.json());
+                record = (d.agents || []).find(a => a.agent_id === agent_id);
+            } catch { return; }
+            if (!record) return;
+            if (!['completed', 'failed', 'interrupted'].includes(record.status)) return;
+            const output = (record.output || record.error || '(no output)').toString();
+            const note = `[Background agent \`${agent_id}\` (${record.agent_type}) ${record.status}.\nOriginal task: ${record.prompt}\nResult:\n${output}\n]\nThe above is real output from a background agent that ran on the user's behalf. Treat it as ground truth and incorporate it into your next response.`;
+            // Persist into the originating session so the user sees it when they switch back
+            store[sessionId].messages.push({ role: 'user', content: note, _agentResult: agent_id });
+            saveStore(store);
+            // If user is currently in that session, also push into live conversationHistory
+            // so the very next /chat turn includes the result
+            if (sessionId === currentSessionId) {
+                conversationHistory.push({ role: 'user', content: note });
+                const marker = document.createElement('div');
+                marker.style.cssText = 'align-self:center;font-size:11px;color:#666;font-style:italic;padding:4px 8px;border-top:1px dashed #1e3a5f;border-bottom:1px dashed #1e3a5f;margin:4px 0;max-width:90%;';
+                marker.textContent = `↳ Result of ${agent_id} folded into chat context (${output.length} chars)`;
+                messagesEl.appendChild(marker);
+                messagesEl.scrollTop = messagesEl.scrollHeight;
+            }
+            _foldedResults.add(agent_id);
+            _saveFoldedResults();
+        }
+
         function connectAgentSSE(agent_id) {
             if (_sseConns[agent_id]) return;
             const es = new EventSource(`/api/agents/${agent_id}/stream`);
@@ -988,6 +1057,7 @@
                     setJobMeta(agent_id, `${data.status} · ${ts}`);
                     es.close();
                     delete _sseConns[agent_id];
+                    foldAgentResult(agent_id);
                 }
             };
             es.onerror = () => { es.close(); delete _sseConns[agent_id]; };
@@ -1021,6 +1091,10 @@
                         if (a.status === 'running' || a.status === 'queued') {
                             connectAgentSSE(a.agent_id);
                         }
+                    }
+                    // Fold result back into chat history when terminal — idempotent
+                    if (['completed', 'failed', 'interrupted'].includes(a.status)) {
+                        foldAgentResult(a.agent_id);
                     }
                 });
                 if (jobs.length === 0 && !list.querySelector('.job-card')) {
