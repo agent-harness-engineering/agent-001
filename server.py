@@ -32,6 +32,26 @@ logging.basicConfig(
 )
 log = logging.getLogger("agent-001")
 
+# ---------------------------------------------------------------------------
+# In-process notification bus (ThinxS pattern)
+# ---------------------------------------------------------------------------
+_notifications: list[dict] = []          # last 50, newest at end
+_notification_queues: set[asyncio.Queue] = set()
+
+
+def push_notification(note: dict) -> None:
+    """Broadcast a notification to all connected chat SSE clients."""
+    _notifications.append(note)
+    if len(_notifications) > 50:
+        _notifications.pop(0)
+    for q in list(_notification_queues):
+        try:
+            q.put_nowait(note)
+        except asyncio.QueueFull:
+            pass
+    log.info("Notification [%s] agent=%s: %s",
+             note.get("level", "info"), note.get("agent_id", ""), note.get("message", "")[:80])
+
 BASE_DIR = Path(__file__).parent
 HOST = os.getenv("AGENT001_HOST", "0.0.0.0")
 PORT = int(os.getenv("AGENT001_PORT", "8095"))
@@ -665,6 +685,68 @@ async def handle_v1_health(request: web.Request) -> web.Response:
 
 
 # ---------------------------------------------------------------------------
+# Notification routes
+# ---------------------------------------------------------------------------
+
+async def handle_notify(request: web.Request) -> web.Response:
+    """POST /api/notify — push a notification into all active chat sessions."""
+    try:
+        body = await request.json()
+    except json.JSONDecodeError:
+        return web.json_response({"error": "Invalid JSON"}, status=400)
+
+    note = {
+        "id": uuid.uuid4().hex[:8],
+        "agent_id": str(body.get("agent_id", "")),
+        "task": str(body.get("task", "")),
+        "status": str(body.get("status", "info")),
+        "message": str(body.get("message", "")),
+        "summary": str(body.get("summary", "")),
+        "level": str(body.get("level", "info")),
+        "ts": datetime.now(timezone.utc).isoformat(),
+    }
+    push_notification(note)
+    return web.json_response({"ok": True, "id": note["id"]})
+
+
+async def handle_notification_stream(request: web.Request) -> web.Response:
+    """GET /api/notifications/stream — SSE stream of agent completion notifications."""
+    q: asyncio.Queue = asyncio.Queue(maxsize=20)
+    _notification_queues.add(q)
+
+    resp = web.Response(
+        content_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
+    await resp.prepare(request)
+
+    # Send any buffered notifications from the last minute
+    cutoff = (datetime.now(timezone.utc).timestamp() - 60)
+    for n in _notifications:
+        try:
+            ts = datetime.fromisoformat(n["ts"]).timestamp()
+            if ts >= cutoff:
+                await resp.write(f"data: {json.dumps(n)}\n\n".encode())
+        except Exception:
+            pass
+
+    try:
+        while True:
+            try:
+                note = await asyncio.wait_for(q.get(), timeout=25.0)
+                await resp.write(f"data: {json.dumps(note)}\n\n".encode())
+            except asyncio.TimeoutError:
+                await resp.write(b": keepalive\n\n")
+    except (ConnectionResetError, asyncio.CancelledError):
+        pass
+    finally:
+        _notification_queues.discard(q)
+        await resp.write_eof()
+
+    return resp
+
+
+# ---------------------------------------------------------------------------
 # Agent runner routes
 # ---------------------------------------------------------------------------
 
@@ -914,27 +996,40 @@ async def on_startup(app: web.Application) -> None:
     # -----------------------------------------------------------------------
     status_store = StatusStore(AGENTS_DIR)
 
-    async def _telegram_notify(agent_id: str, status: str, summary: str) -> None:
+    async def _on_agent_complete(agent_id: str, status: str, summary: str) -> None:
+        # 1. In-chat notification (pushes to all connected chat SSE streams)
+        status_icon = {"completed": "Done", "failed": "Failed", "interrupted": "Stopped"}.get(status, status.title())
+        note = {
+            "id": uuid.uuid4().hex[:8],
+            "agent_id": agent_id,
+            "status": status,
+            "message": f"**{status_icon}** `{agent_id}`" + (f": {summary[:160]}" if summary else ""),
+            "summary": summary,
+            "level": "success" if status == "completed" else "error",
+            "ts": datetime.now(timezone.utc).isoformat(),
+        }
+        push_notification(note)
+
+        # 2. Telegram (optional)
         tg_token = os.getenv("TELEGRAM_BOT_TOKEN", "")
         tg_chat = os.getenv("TELEGRAM_CHAT_ID", "")
-        if not tg_token or not tg_chat:
-            return
-        import urllib.parse
-        text = f"Agent `{agent_id}` {status}\n{summary[:200]}"
-        url = f"https://api.telegram.org/bot{tg_token}/sendMessage"
-        params = urllib.parse.urlencode({"chat_id": tg_chat, "text": text, "parse_mode": "Markdown"})
-        try:
-            async with app["http_session"].post(url + "?" + params) as r:
-                pass
-        except Exception as exc:
-            log.warning("Telegram notify failed: %s", exc)
+        if tg_token and tg_chat:
+            import urllib.parse
+            text = f"Agent `{agent_id}` {status}\n{summary[:200]}"
+            url = f"https://api.telegram.org/bot{tg_token}/sendMessage"
+            params = urllib.parse.urlencode({"chat_id": tg_chat, "text": text, "parse_mode": "Markdown"})
+            try:
+                async with app["http_session"].post(url + "?" + params) as r:
+                    pass
+            except Exception as exc:
+                log.warning("Telegram notify failed: %s", exc)
 
     agent_runner = AgentRunner(
         status_store=status_store,
         http_session=app["http_session"],
         endpoints=app["state"]["endpoints"],
         system_prompt=system_prompt,
-        notify_callback=_telegram_notify,
+        notify_callback=_on_agent_complete,
     )
     app["runner"] = agent_runner
     app["status_store"] = status_store
@@ -969,6 +1064,8 @@ def create_app() -> web.Application:
     app.router.add_post("/task", handle_task_submit)
 
     # Agent runner (P1)
+    app.router.add_post("/api/notify", handle_notify)
+    app.router.add_get("/api/notifications/stream", handle_notification_stream)
     app.router.add_post("/api/agents/spawn", handle_agent_spawn)
     app.router.add_get("/api/agents", handle_agent_list)
     app.router.add_get("/api/agents/{agent_id}/stream", handle_agent_stream)
