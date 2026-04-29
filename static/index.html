@@ -422,6 +422,89 @@
         .job-meta { font-size: 11px; color: #333; font-family: ui-monospace, monospace; margin-top: 4px; }
         .task-desc { font-size: 12px; color: #bbb; overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
         .task-meta { font-size: 11px; color: #444; font-family: ui-monospace, monospace; }
+
+        /* ── Mobile layout ────────────────────────────────────────────── */
+        @media (max-width: 640px) {
+            /* Stacked header: title row + model row */
+            header {
+                flex-wrap: wrap;
+                height: auto;
+                padding: 0;
+                gap: 0;
+            }
+            .hamburger { order: 1; padding: 12px 10px; }
+            #hdr-dot   { order: 2; }
+            header h1  { order: 3; flex: 1; font-size: 15px; }
+            nav.tabs   { order: 4; margin-left: 0; }
+            .model-badge {
+                order: 5;
+                width: 100%;
+                margin-left: 0;
+                padding: 5px 14px;
+                font-size: 12px;
+                color: #60a5fa;
+                text-align: center;
+                border-top: 1px solid #1e3a5f;
+                border-bottom: 1px solid #1e3a5f;
+                background: #090e1c;
+            }
+
+            /* Sidebar: slide-over overlay instead of push */
+            #sidebar {
+                position: fixed;
+                top: 0; bottom: 0; left: 0;
+                z-index: 100;
+                width: 260px !important;
+                transform: translateX(-100%);
+                transition: transform 0.22s ease;
+                box-shadow: 4px 0 24px rgba(0,0,0,0.5);
+            }
+            #sidebar.open { transform: translateX(0); }
+            /* Tap-outside scrim */
+            #sidebar-scrim {
+                display: none;
+                position: fixed; inset: 0; z-index: 99;
+                background: rgba(0,0,0,0.45);
+            }
+            #sidebar.open ~ #sidebar-scrim,
+            body.sidebar-open #sidebar-scrim { display: block; }
+
+            /* Layout: main takes full width */
+            #layout { position: relative; }
+            #main { width: 100%; }
+
+            /* Larger touch targets in chat */
+            #messages { padding: 12px 10px; gap: 10px; }
+            .msg { max-width: 92%; padding: 10px 12px; font-size: 14px; }
+            #input-bar { padding: 8px 10px; gap: 8px; }
+            #input { font-size: 16px; } /* prevents iOS auto-zoom */
+            #send { padding: 10px 16px; font-size: 14px; }
+
+            /* Agents: stack spawn controls */
+            .agents-header {
+                flex-direction: column !important;
+                align-items: flex-start !important;
+                gap: 8px !important;
+                padding: 12px 12px 8px;
+            }
+            .agents-header > div {
+                flex-wrap: wrap !important;
+                width: 100%;
+                gap: 6px !important;
+            }
+            #spawn-prompt { width: 100% !important; flex: 1 1 100% !important; }
+            #spawn-type   { flex: 1; }
+
+            /* Agent cards: single column */
+            .agent-grid { grid-template-columns: 1fr !important; }
+
+            /* Job cards: full width */
+            .job-card { font-size: 13px; }
+            .job-output { max-height: 200px; font-size: 12px; }
+
+            /* Audit rows: hide url column on narrow screens */
+            .audit-row { font-size: 11px; gap: 6px; }
+        }
     </style>
 </head>
 <body>
@@ -444,6 +527,7 @@
             </div>
             <div id="session-list"></div>
         </div>
+        <div id="sidebar-scrim" onclick="toggleSidebar()"></div>
 
         <!-- Main content -->
         <div id="main">
@@ -584,10 +668,16 @@
         }
 
         // ── Sidebar toggle ────────────────────────────────────────────────
-        let sidebarOpen = true;
+        let sidebarOpen = window.innerWidth > 640;
         function toggleSidebar() {
             sidebarOpen = !sidebarOpen;
-            document.getElementById('sidebar').classList.toggle('closed', !sidebarOpen);
+            const sb = document.getElementById('sidebar');
+            if (window.innerWidth <= 640) {
+                sb.classList.toggle('open', sidebarOpen);
+                document.body.classList.toggle('sidebar-open', sidebarOpen);
+            } else {
+                sb.classList.toggle('closed', !sidebarOpen);
+            }
         }
 
         // ── Tab switching ─────────────────────────────────────────────────
