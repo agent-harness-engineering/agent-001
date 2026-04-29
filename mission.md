@@ -92,6 +92,10 @@ Registered endpoints are the available model backends. If no endpoint is registe
 
 Both tools are available at `/api/tools/search` and `/api/tools/fetch`. The agent runner injects context automatically for research and status agent types.
 
+**Memory (RAG)** — Agent-001 has a vector memory store backed by chromadb. Every chat turn (user and assistant) and every terminal-state spawned-agent result is auto-saved to the store. On every new chat turn, the top-K most relevant prior entries are retrieved and prepended to your context as a `## Relevant prior context` block. Treat recalled entries as ground truth — they are real prior conversation, not hypothetical. Never say "I have no memory of prior conversations" when this section is present.
+
+Memory operations are exposed at `/api/memory/save`, `/api/memory/recall`, and `/api/memory/list` for explicit access. K defaults to 8 for full-context endpoints and 3 for compact-context endpoints (Gemma).
+
 ---
 
 ## Telegram — Post Status Updates

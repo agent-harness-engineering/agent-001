@@ -25,6 +25,7 @@ from gates import PermissionGate, PermissionPolicy, PermissionDecision
 from governance import GovernanceGuard
 from proxy import ToolProxy, CanonicalToolCall, ValidationError
 from runner import AgentRunner, AGENT_TYPES, StatusStore
+from runner.memory_store import MemoryStore
 from tools import fetch_url, search, SSRFError
 
 logging.basicConfig(
@@ -62,6 +63,10 @@ MEMORY_DIR = BASE_DIR / "memory"
 ENDPOINTS_FILE = MEMORY_DIR / "endpoints.json"
 HISTORY_DIR = BASE_DIR / "history"
 AGENTS_DIR = BASE_DIR / "memory" / "agents"
+CHROMA_DIR = BASE_DIR / "memory" / "chroma_db"
+RECALL_K_FULL = int(os.getenv("MEMORY_RECALL_K_FULL", "8"))
+RECALL_K_COMPACT = int(os.getenv("MEMORY_RECALL_K_COMPACT", "3"))
+MEMORY_DIST_THRESHOLD = float(os.getenv("MEMORY_DIST_THRESHOLD", "0.6"))
 
 # 4M module files
 GOVERNANCE_MODULES = ["mission.md", "mind.md", "morals.md", "memory_module.md"]
@@ -184,7 +189,36 @@ async def handle_chat(request: web.Request) -> web.Response:
     # Build messages: select governance tier based on endpoint config
     governance_tier = endpoint.get("governance", "full")
     sys_prompt = state["compact_prompt"] if governance_tier == "compact" else state["system_prompt"]
+
+    # RAG recall: pull top-K relevant prior memories and inject as a separate system block.
+    # K is smaller for compact-governance (small-context) endpoints.
+    memory_context = ""
+    memory_store: MemoryStore | None = request.app.get("memory_store")
+    if memory_store:
+        k = RECALL_K_COMPACT if governance_tier == "compact" else RECALL_K_FULL
+        hits = memory_store.recall(query=message, k=k)
+        # Filter by cosine distance — drop weak matches that would just add noise
+        relevant = [h for h in hits if (h.get("distance") is None or h["distance"] <= MEMORY_DIST_THRESHOLD)]
+        if relevant:
+            lines = []
+            for h in relevant:
+                meta = h.get("metadata", {}) or {}
+                tag = meta.get("source", "chat")
+                if meta.get("agent_id"):
+                    tag = f"agent_result:{meta.get('agent_type', '?')}"
+                ts = (meta.get("timestamp") or "")[:19]
+                lines.append(f"- [{ts} | {tag}] {h['text'][:600]}")
+            memory_context = (
+                "## Relevant prior context\n\n"
+                "The entries below are real recall from prior conversations and agent results "
+                "stored in the agent-001 memory. Treat them as ground truth — do not say "
+                "you have no memory.\n\n"
+                + "\n".join(lines)
+            )
+
     messages = [{"role": "system", "content": sys_prompt}]
+    if memory_context:
+        messages.append({"role": "system", "content": memory_context})
     for entry in history:
         role = entry.get("role", "user")
         content = entry.get("content", "")
@@ -221,6 +255,13 @@ async def handle_chat(request: web.Request) -> web.Response:
             choices = data.get("choices", [])
             reply = choices[0]["message"]["content"] if choices else "(no response)"
             _log_chat(request, message, reply, endpoint_name)
+            # Auto-save both turns into RAG memory
+            if memory_store:
+                session_id = body.get("session_id") or "anon"
+                memory_store.save(message, {"source": "chat", "role": "user",
+                                            "session_id": session_id})
+                memory_store.save(reply, {"source": "chat", "role": "assistant",
+                                          "session_id": session_id, "endpoint": endpoint_name})
             return web.json_response({"response": reply, "endpoint": endpoint_name})
     except aiohttp.ClientError as e:
         log.error("Chat connection error: %s", e)
@@ -956,6 +997,52 @@ async def handle_agent_cancel(request: web.Request) -> web.Response:
     return web.json_response({"error": "Agent not found or already finished"}, status=404)
 
 
+async def handle_memory_save(request: web.Request) -> web.Response:
+    """POST /api/memory/save — explicit save with metadata.
+
+    Body: { "text": "...", "metadata": {...} }
+    Returns: { "id": "...", "count": N }
+    """
+    try:
+        body = await request.json()
+    except json.JSONDecodeError:
+        return web.json_response({"error": "Invalid JSON"}, status=400)
+    text = (body.get("text") or "").strip()
+    if not text:
+        return web.json_response({"error": "Required field: text"}, status=400)
+    metadata = body.get("metadata") or {}
+    metadata.setdefault("source", "explicit")
+    store: MemoryStore = request.app["memory_store"]
+    entry_id = store.save(text, metadata)
+    return web.json_response({"id": entry_id, "count": store.count()})
+
+
+async def handle_memory_recall(request: web.Request) -> web.Response:
+    """GET /api/memory/recall?q=&k= — top-K relevant entries."""
+    q = request.rel_url.query.get("q", "").strip()
+    if not q:
+        return web.json_response({"error": "Required query param: q"}, status=400)
+    try:
+        k = int(request.rel_url.query.get("k", "5"))
+    except ValueError:
+        k = 5
+    store: MemoryStore = request.app["memory_store"]
+    return web.json_response({"results": store.recall(q, k=max(1, min(k, 50)))})
+
+
+async def handle_memory_list(request: web.Request) -> web.Response:
+    """GET /api/memory/list?source=&limit= — recent entries (newest first)."""
+    source = request.rel_url.query.get("source")
+    try:
+        limit = int(request.rel_url.query.get("limit", "50"))
+    except ValueError:
+        limit = 50
+    where = {"source": source} if source else None
+    store: MemoryStore = request.app["memory_store"]
+    return web.json_response({"results": store.list(where=where, limit=max(1, min(limit, 500))),
+                              "count": store.count()})
+
+
 async def handle_agent_types(request: web.Request) -> web.Response:
     """GET /api/agent-types — list available agent types."""
     return web.json_response({
@@ -1101,6 +1188,9 @@ async def on_startup(app: web.Application) -> None:
     # Initialise agent runner (P1)
     # -----------------------------------------------------------------------
     status_store = StatusStore(AGENTS_DIR)
+    memory_store = MemoryStore(CHROMA_DIR)
+    app["memory_store"] = memory_store
+    log.info("Memory store registered | dir=%s", CHROMA_DIR)
 
     async def _on_agent_complete(agent_id: str, status: str, summary: str) -> None:
         # 1. In-chat notification (pushes to all connected chat SSE streams)
@@ -1115,6 +1205,23 @@ async def on_startup(app: web.Application) -> None:
             "ts": datetime.now(timezone.utc).isoformat(),
         }
         push_notification(note)
+
+        # 1b. Save terminal-state results to RAG memory
+        if status in ("completed", "failed") and summary:
+            try:
+                stored = status_store.load(agent_id)
+                prompt = stored.prompt if stored else ""
+                agent_type = stored.agent_type if stored else "unknown"
+                output = stored.output if stored and stored.output else summary
+                text = f"Task: {prompt}\nAgent type: {agent_type}\nStatus: {status}\nResult:\n{output}"
+                memory_store.save(text, {
+                    "source": "agent_result",
+                    "agent_id": agent_id,
+                    "agent_type": agent_type,
+                    "status": status,
+                })
+            except Exception as exc:
+                log.warning("Memory save (agent_result) failed: %s", exc)
 
         # 2. Telegram (optional)
         tg_token = os.getenv("TELEGRAM_BOT_TOKEN", "")
@@ -1184,6 +1291,9 @@ def create_app() -> web.Application:
     app.router.add_get("/api/agents/{agent_id}/stream", handle_agent_stream)
     app.router.add_post("/api/agents/{agent_id}/cancel", handle_agent_cancel)
     app.router.add_get("/api/agent-types", handle_agent_types)
+    app.router.add_post("/api/memory/save", handle_memory_save)
+    app.router.add_get("/api/memory/recall", handle_memory_recall)
+    app.router.add_get("/api/memory/list", handle_memory_list)
 
     # MCP
     app.router.add_get("/mcp/tools", handle_mcp_tools)
