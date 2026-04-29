@@ -10,6 +10,7 @@
     "temperature": 0.7,
     "max_tokens": 2048,
     "timeout_seconds": 300,
+    "governance": "compact",
     "registered_at": "2026-04-27T12:02:38.938633+00:00"
   }
 }

@@ -87,6 +87,17 @@ def load_governance() -> str:
     return "\n\n---\n\n".join(sections)
 
 
+def load_governance_compact() -> str:
+    """Read governance_compact.md for small-context endpoints (e.g. Gemma n_ctx=4096)."""
+    path = BASE_DIR / "governance_compact.md"
+    if path.exists():
+        content = path.read_text().strip()
+        log.info("Loaded compact governance: %d chars", len(content))
+        return content
+    log.warning("governance_compact.md not found, falling back to full governance")
+    return ""
+
+
 def load_endpoints() -> dict:
     """Load registered endpoints from disk."""
     if ENDPOINTS_FILE.exists():
@@ -167,8 +178,10 @@ async def handle_chat(request: web.Request) -> web.Response:
     endpoint_name = next(iter(state["endpoints"]))
     endpoint = state["endpoints"][endpoint_name]
 
-    # Build messages: system prompt + conversation history
-    messages = [{"role": "system", "content": state["system_prompt"]}]
+    # Build messages: select governance tier based on endpoint config
+    governance_tier = endpoint.get("governance", "full")
+    sys_prompt = state["compact_prompt"] if governance_tier == "compact" else state["system_prompt"]
+    messages = [{"role": "system", "content": sys_prompt}]
     for entry in history:
         role = entry.get("role", "user")
         content = entry.get("content", "")
@@ -289,6 +302,7 @@ async def handle_endpoint_register(request: web.Request) -> web.Response:
         "temperature": body.get("temperature", 0.7),
         "max_tokens": body.get("max_tokens", 2048),
         "timeout_seconds": body.get("timeout_seconds", 300),
+        "governance": body.get("governance", "full"),
         "registered_at": datetime.now(timezone.utc).isoformat(),
     }
 
@@ -366,11 +380,13 @@ async def handle_task_submit(request: web.Request) -> web.Response:
     log.info("Task %s dispatching to %s", task_id, endpoint_name)
 
     # Dispatch
+    governance_tier = endpoint.get("governance", "full")
+    task_sys_prompt = state["compact_prompt"] if governance_tier == "compact" else state["system_prompt"]
     try:
         result = await dispatch_to_endpoint(
             request.app["http_session"],
             endpoint,
-            state["system_prompt"],
+            task_sys_prompt,
             description,
         )
 
@@ -889,10 +905,12 @@ async def handle_agent_types(request: web.Request) -> web.Response:
 async def on_startup(app: web.Application) -> None:
     # Load 4M governance as system prompt
     system_prompt = load_governance()
+    compact_prompt = load_governance_compact() or system_prompt
     endpoints = load_endpoints()
 
     app["state"] = {
         "system_prompt": system_prompt,
+        "compact_prompt": compact_prompt,
         "governance_loaded": bool(system_prompt),
         "endpoints": endpoints,
         "tasks": {},
@@ -1051,6 +1069,7 @@ async def on_startup(app: web.Application) -> None:
         http_session=app["http_session"],
         endpoints=app["state"]["endpoints"],
         system_prompt=system_prompt,
+        compact_prompt=compact_prompt,
         notify_callback=_on_agent_complete,
     )
     app["runner"] = agent_runner

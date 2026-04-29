@@ -38,12 +38,14 @@ class AgentRunner:
         http_session: aiohttp.ClientSession,
         endpoints: dict,
         system_prompt: str,
+        compact_prompt: str = "",
         notify_callback=None,
     ) -> None:
         self._store = status_store
         self._http = http_session
         self._endpoints = endpoints
         self._system_prompt = system_prompt
+        self._compact_prompt = compact_prompt or system_prompt
         self._notify = notify_callback  # async fn(agent_id, status, summary)
 
     def spawn(
@@ -115,10 +117,13 @@ class AgentRunner:
         if ep.get("api_key"):
             headers["Authorization"] = f"Bearer {ep['api_key']}"
 
+        governance_tier = ep.get("governance", "full")
+        sys_prompt = self._compact_prompt if governance_tier == "compact" else self._system_prompt
+
         payload = {
             "model": ep.get("model", ep_name),
             "messages": [
-                {"role": "system", "content": self._system_prompt},
+                {"role": "system", "content": sys_prompt},
                 {"role": "user", "content": full_prompt},
             ],
             "temperature": ep.get("temperature", 0.7),
