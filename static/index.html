@@ -15,6 +15,7 @@
             background: #0a0f1a;
             color: #e0e0e0;
             height: 100vh;
+            height: 100dvh; /* dynamic viewport — respects mobile browser chrome */
             display: flex;
             flex-direction: column;
             overflow: hidden;
@@ -29,7 +30,7 @@
             align-items: center;
             gap: 10px;
             flex-shrink: 0;
-            height: 48px;
+            min-height: 48px;
             z-index: 20;
         }
         .hamburger {
@@ -281,14 +282,23 @@
 
         /* ── Agents view ── */
         #agents-view {
-            padding: 20px;
+            padding: 0;
+            overflow: hidden;
+        }
+        .agents-header {
+            flex-shrink: 0;
+            border-bottom: 1px solid #1a2a45;
+        }
+        #agents-scroll {
+            flex: 1;
             overflow-y: auto;
+            padding: 16px 20px 24px;
         }
         .agents-header {
             display: flex;
             align-items: center;
             justify-content: space-between;
-            margin-bottom: 16px;
+            padding: 12px 20px;
         }
         .agents-header h2 { font-size: 15px; font-weight: 600; color: #60a5fa; }
         .refresh-btn {
@@ -556,20 +566,21 @@
                         <button class="refresh-btn" onclick="loadAgents()">Refresh</button>
                     </div>
                 </div>
+                <div id="agents-scroll">
+                    <div class="section-title">Registered Endpoints</div>
+                    <div class="agent-grid" id="agent-grid" style="margin-bottom:20px;">
+                        <div class="empty-state">Loading...</div>
+                    </div>
 
-                <div class="section-title">Registered Endpoints</div>
-                <div class="agent-grid" id="agent-grid" style="margin-bottom:20px;">
-                    <div class="empty-state">Loading...</div>
-                </div>
+                    <div class="section-title">Running Agents</div>
+                    <div id="job-list" style="display:flex;flex-direction:column;gap:10px;margin-bottom:20px;">
+                        <div class="empty-state">No agents yet.</div>
+                    </div>
 
-                <div class="section-title">Running Agents</div>
-                <div id="job-list" style="display:flex;flex-direction:column;gap:10px;margin-bottom:20px;">
-                    <div class="empty-state">No agents yet.</div>
-                </div>
-
-                <div class="section-title">Recent Audit Events</div>
-                <div class="audit-list" id="audit-list">
-                    <div class="empty-state">Loading...</div>
+                    <div class="section-title">Recent Audit Events</div>
+                    <div class="audit-list" id="audit-list">
+                        <div class="empty-state">Loading...</div>
+                    </div>
                 </div>
             </div>
         </div>
