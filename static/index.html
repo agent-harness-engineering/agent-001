@@ -640,11 +640,14 @@
         function shouldIntercept(text) {
             if (text.startsWith('/spawn')) return true;
             const lower = text.toLowerCase();
-            return !!(
-                lower.match(/\bspawn\s+(?:a\s+)?(?:\w+\s+)?agent\b/) ||
-                lower.match(/\bcreate\s+(?:a\s+)?(?:\w+\s+)?agent\b/) ||
-                lower.match(/\blaunch\s+(?:a\s+)?(?:\w+\s+)?agent\b/) ||
-                lower.match(/\brun\s+(?:a\s+)?(?:\w+\s+)?agent\b/)
+            const hasAgent = lower.includes('agent') || lower.includes('job');
+            return hasAgent && (
+                lower.includes('spawn') ||
+                lower.includes('launch') ||
+                lower.includes('start') ||
+                lower.includes('create') ||
+                lower.includes('run a') ||
+                lower.includes('kick off')
             );
         }
 
