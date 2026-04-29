@@ -755,6 +755,9 @@
         function shouldIntercept(text) {
             if (text.startsWith('/spawn')) return true;
             const lower = text.toLowerCase();
+            // Explicit web search / fetch requests — always intercept, no "agent" word needed
+            if (/\bsearch\s+(?:the\s+)?web\b|\bweb\s+search\b|\blook\s+(?:it\s+)?up\b|\bfetch\s+https?:/.test(lower)) return true;
+            // Agent/job spawn patterns
             const hasAgent = lower.includes('agent') || lower.includes('job');
             return hasAgent && (
                 lower.includes('spawn') ||
@@ -762,12 +765,16 @@
                 lower.includes('start') ||
                 lower.includes('create') ||
                 lower.includes('run a') ||
-                lower.includes('kick off')
+                lower.includes('kick off') ||
+                lower.includes('search') ||
+                lower.includes('research') ||
+                lower.includes('look up') ||
+                lower.includes('find me')
             );
         }
 
         async function handleSpawn(text) {
-            const TYPES = ['general', 'research', 'sysadmin', 'status'];
+            const TYPES = ['general', 'research', 'sysadmin', 'status', 'web_search'];
             let type = 'general', prompt = text;
 
             if (text.startsWith('/spawn')) {
@@ -776,11 +783,20 @@
                 prompt = args.join(' ');
             } else {
                 const lower = text.toLowerCase();
-                if (/\bstatus\b|\bhealth\b|\bmonitor\b/.test(lower)) type = 'status';
+                // Type detection — web_search first (most specific)
+                if (/\bweb\s+search\b|\bsearch\s+(?:the\s+)?web\b|\blook\s+(?:it\s+)?up\b/.test(lower)) type = 'web_search';
+                else if (/\bsearch\b|\bfind\b|\blook\s+up\b|\bresearch\b|\banalyz\b|\binvestigat\b/.test(lower)) type = 'research';
+                else if (/\bstatus\b|\bhealth\b|\bmonitor\b/.test(lower)) type = 'status';
                 else if (/\bsysadmin\b|\binfra\b|\bops\b/.test(lower)) type = 'sysadmin';
-                else if (/\bresearch\b|\banalyz\b|\binvestigat\b/.test(lower)) type = 'research';
-                const m = text.match(/\bagent\s+(?:to|that|which|for|:)?\s*/i);
-                if (m) prompt = text.slice(m.index + m[0].length).trim() || text;
+                // Prompt extraction — strip the spawn-intent preamble, keep the actual task
+                const stripRe = /^(?:(?:spawn|launch|start|create|run|kick\s+off)\s+(?:a\s+)?(?:web\s+search|research|status|sysadmin|general)?\s*agent\s+(?:to|that|which|for|:)?\s*|(?:search\s+(?:the\s+)?web|web\s+search)\s+(?:for\s+)?)/i;
+                const stripped = text.replace(stripRe, '').trim();
+                if (stripped && stripped.length > 3) prompt = stripped;
+                // Fallback: extract after "agent for/to/that"
+                if (prompt === text) {
+                    const m = text.match(/\bagent\s+(?:to|that|which|for|:)?\s*/i);
+                    if (m) prompt = text.slice(m.index + m[0].length).trim() || text;
+                }
             }
 
             if (!prompt) {

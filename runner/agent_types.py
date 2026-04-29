@@ -44,4 +44,16 @@ AGENT_TYPES: dict[str, AgentTypeConfig] = {
         ),
         capabilities=["monitoring", "read", "web_search", "web_fetch"],
     ),
+    "web_search": AgentTypeConfig(
+        description="Live web search and retrieval agent",
+        prompt_prefix=(
+            "You are a web search agent. "
+            "Live search results and fetched page content have been injected into your context above — "
+            "they are current, real information retrieved moments ago. "
+            "Use them as your primary source. Cite titles and URLs. "
+            "Summarize what you found clearly and completely. "
+            "Do not say you lack access to current information — you have it above. "
+        ),
+        capabilities=["web_search", "web_fetch", "research"],
+    ),
 }

@@ -107,8 +107,8 @@ class AgentRunner:
             else:
                 lines.append(f"## Fetch failed: {url} — {result['error']}")
 
-        # Search for research/status agents (only if no URLs already fetched)
-        if agent_type in ("research", "status") and not urls:
+        # Search for research/status/web_search agents (only if no URLs already fetched)
+        if agent_type in ("research", "status", "web_search") and not urls:
             query = prompt[:200]
             result = await search(self._http, query, self._searxng_url, limit=5)
             if "results" in result and result["results"]:
