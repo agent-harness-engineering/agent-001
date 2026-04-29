@@ -676,7 +676,6 @@
                 return;
             }
 
-            injectSystemMessage({ level: 'info', message: `Spawning **${type}** agent…` });
             try {
                 const resp = await fetch('/api/agents/spawn', {
                     method: 'POST',
@@ -685,7 +684,7 @@
                 });
                 const data = await resp.json();
                 if (data.agent_id) {
-                    injectSystemMessage({ level: 'success', message: `Agent \`${data.agent_id}\` queued (${type})` });
+                    injectSystemMessage({ level: 'success', message: `Agent \`${data.agent_id}\` spawned (${type}) — watch Agents tab` });
                     addJobCard(data.agent_id, type, prompt, 'queued');
                     connectAgentSSE(data.agent_id);
                 } else {
@@ -954,7 +953,14 @@
             newSession();
         }
         // ── Agent completion notifications ────────────────────────────────
+        const _seenNoteIds = new Set();
+
         function injectSystemMessage(note) {
+            // Deduplicate: SSE and poll can both deliver the same notification
+            const id = note.id;
+            if (id && _seenNoteIds.has(id)) return;
+            if (id) _seenNoteIds.add(id);
+
             const level = note.level || 'info';
             const color = level === 'success' ? '#4ade80' : level === 'error' ? '#f87171' : '#60a5fa';
             const div = document.createElement('div');
@@ -991,10 +997,8 @@
             try {
                 const d = await fetch(`/api/notifications?since=${_notifSince}`).then(r => r.json());
                 const ns = d.notifications || [];
-                if (ns.length > 0) {
-                    ns.forEach(n => injectSystemMessage(n));
-                    _notifSince = Date.now() / 1000;
-                }
+                _notifSince = Date.now() / 1000;
+                ns.forEach(n => injectSystemMessage(n));
             } catch {}
         }
         setInterval(pollNotifications, 10000);
