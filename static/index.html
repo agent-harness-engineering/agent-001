@@ -526,7 +526,7 @@
         <h1 onclick="hardReload()" title="Click to reload">Agent-001</h1>
         <nav class="tabs">
             <button class="active" onclick="switchTab('chat')" id="tab-chat">Chat</button>
-            <button onclick="switchTab('agents')" id="tab-agents">Agents</button>
+            <button onclick="switchTab('agents')" id="tab-agents">Agents<span id="tab-agents-badge" style="display:none;margin-left:6px;background:#60a5fa;color:#0a0f1a;border-radius:9px;padding:1px 6px;font-size:10px;font-weight:600;"></span></button>
         </nav>
         <span class="model-badge" id="model-badge">connecting...</span>
     </header>
@@ -998,6 +998,46 @@
             updateJobCard(agent_id, 'interrupted', null);
         }
 
+        async function refreshJobs() {
+            try {
+                const d = await fetch('/api/agents').then(r => r.json());
+                const jobs = d.agents || [];
+                const list = document.getElementById('job-list');
+                jobs.forEach(a => {
+                    const card = document.getElementById(`job-${a.agent_id}`);
+                    if (!card) {
+                        addJobCard(a.agent_id, a.agent_type, a.prompt, a.status);
+                        if (a.output) updateJobCard(a.agent_id, a.status, a.output);
+                        setJobMeta(a.agent_id, `${a.status}${a.completed_at ? ' · ' + a.completed_at.slice(11,19) : ''}`);
+                        if (a.status === 'running' || a.status === 'queued') {
+                            connectAgentSSE(a.agent_id);
+                        }
+                    } else if (!_sseConns[a.agent_id]) {
+                        // Card exists but no SSE — reconcile status from disk
+                        if (card.className !== `job-card ${a.status}`) {
+                            updateJobCard(a.agent_id, a.status, a.output || null);
+                            setJobMeta(a.agent_id, `${a.status}${a.completed_at ? ' · ' + a.completed_at.slice(11,19) : ''}`);
+                        }
+                        if (a.status === 'running' || a.status === 'queued') {
+                            connectAgentSSE(a.agent_id);
+                        }
+                    }
+                });
+                if (jobs.length === 0 && !list.querySelector('.job-card')) {
+                    list.innerHTML = '<div class="empty-state">No agents yet. Use Spawn to create one.</div>';
+                }
+                // Update Agents tab badge with running count
+                const running = jobs.filter(a => a.status === 'running' || a.status === 'queued').length;
+                const badge = document.getElementById('tab-agents-badge');
+                if (running > 0) {
+                    badge.textContent = running;
+                    badge.style.display = 'inline-block';
+                } else {
+                    badge.style.display = 'none';
+                }
+            } catch {}
+        }
+
         async function loadAgents() {
             const grid      = document.getElementById('agent-grid');
             const auditList = document.getElementById('audit-list');
@@ -1026,25 +1066,7 @@
                     </div>`;
                 }).join('');
 
-            // Restore persisted agents from disk on tab open
-            try {
-                const d = await fetch('/api/agents').then(r => r.json());
-                const jobs = d.agents || [];
-                const list = document.getElementById('job-list');
-                jobs.forEach(a => {
-                    if (!document.getElementById(`job-${a.agent_id}`)) {
-                        addJobCard(a.agent_id, a.agent_type, a.prompt, a.status);
-                        if (a.output) updateJobCard(a.agent_id, a.status, a.output);
-                        setJobMeta(a.agent_id, `${a.status}${a.completed_at ? ' · ' + a.completed_at.slice(11,19) : ''}`);
-                        if (a.status === 'running' || a.status === 'queued') {
-                            connectAgentSSE(a.agent_id);
-                        }
-                    }
-                });
-                if (jobs.length === 0 && !list.querySelector('.job-card')) {
-                    list.innerHTML = '<div class="empty-state">No agents yet. Use Spawn to create one.</div>';
-                }
-            } catch {}
+            await refreshJobs();
 
             // Audit events
             let events = [];
@@ -1130,6 +1152,10 @@
             } catch {}
         }
         setInterval(pollNotifications, 10000);
+
+        // Poll for agents spawned outside the UI (chat intercept, API, etc.) every 5s
+        refreshJobs();
+        setInterval(refreshJobs, 5000);
 
         checkStatus();
         setInterval(checkStatus, 30000);
