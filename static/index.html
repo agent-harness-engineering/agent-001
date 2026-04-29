@@ -14,47 +14,176 @@
             height: 100vh;
             display: flex;
             flex-direction: column;
+            overflow: hidden;
         }
+
+        /* ── Header ── */
         header {
             background: #0d1525;
-            padding: 10px 16px;
+            padding: 0 16px;
             border-bottom: 1px solid #1e3a5f;
             display: flex;
             align-items: center;
             gap: 10px;
+            flex-shrink: 0;
+            height: 48px;
+            z-index: 20;
         }
+        .hamburger {
+            background: none;
+            border: none;
+            color: #555;
+            cursor: pointer;
+            padding: 4px 6px;
+            border-radius: 5px;
+            font-size: 18px;
+            line-height: 1;
+            transition: color 0.15s, background 0.15s;
+            flex-shrink: 0;
+        }
+        .hamburger:hover { color: #aaa; background: rgba(255,255,255,0.05); }
         header h1 {
-            font-size: 16px;
+            font-size: 15px;
             font-weight: 600;
             color: #60a5fa;
             cursor: pointer;
             user-select: none;
             transition: color 0.15s;
+            white-space: nowrap;
         }
-        header h1:hover {
-            color: #93c5fd;
+        header h1:hover { color: #93c5fd; }
+        .hdr-dot {
+            width: 9px; height: 9px; border-radius: 50%; background: #888; flex-shrink: 0;
         }
-        header h1:active {
-            color: #3b82f6;
+        .hdr-dot.connected { background: #4ade80; box-shadow: 0 0 6px #4ade80; animation: glow 2s ease-in-out infinite alternate; }
+        .hdr-dot.error { background: #f87171; box-shadow: 0 0 6px #f87171; }
+        @keyframes glow { from { box-shadow: 0 0 4px #4ade80; } to { box-shadow: 0 0 10px #4ade80; } }
+
+        /* ── Tab strip ── */
+        nav.tabs {
+            display: flex;
+            gap: 2px;
+            margin-left: 8px;
         }
-        .status-dot {
-            width: 10px; height: 10px; border-radius: 50%; background: #888;
+        nav.tabs button {
+            background: none;
+            border: none;
+            color: #555;
+            font-size: 13px;
+            font-weight: 500;
+            padding: 6px 14px;
+            border-radius: 6px;
+            cursor: pointer;
+            transition: color 0.15s, background 0.15s;
         }
-        .status-dot.connected {
-            background: #4ade80;
-            box-shadow: 0 0 6px #4ade80;
-            animation: glow 2s ease-in-out infinite alternate;
+        nav.tabs button:hover { color: #aaa; background: rgba(255,255,255,0.05); }
+        nav.tabs button.active { color: #60a5fa; background: rgba(96,165,250,0.1); }
+
+        .model-badge { font-size: 11px; color: #444; margin-left: auto; white-space: nowrap; }
+
+        /* ── Body layout: sidebar + main ── */
+        #layout {
+            display: flex;
+            flex: 1;
+            overflow: hidden;
         }
-        .status-dot.error { background: #f87171; box-shadow: 0 0 6px #f87171; }
-        @keyframes glow {
-            from { box-shadow: 0 0 4px #4ade80; }
-            to { box-shadow: 0 0 10px #4ade80; }
+
+        /* ── Sidebar ── */
+        #sidebar {
+            width: 220px;
+            background: #0b1120;
+            border-right: 1px solid #1a2a45;
+            display: flex;
+            flex-direction: column;
+            flex-shrink: 0;
+            overflow: hidden;
+            transition: width 0.2s ease;
         }
-        .model-badge {
-            font-size: 11px;
-            color: #888;
-            margin-left: auto;
+        #sidebar.closed { width: 0; border-right-color: transparent; }
+
+        .sidebar-top {
+            padding: 10px;
+            border-bottom: 1px solid #1a2a45;
+            flex-shrink: 0;
         }
+        .new-session-btn {
+            width: 100%;
+            background: rgba(96,165,250,0.1);
+            border: 1px solid rgba(96,165,250,0.2);
+            color: #60a5fa;
+            border-radius: 6px;
+            padding: 7px 10px;
+            font-size: 12px;
+            font-weight: 600;
+            cursor: pointer;
+            text-align: left;
+            transition: background 0.15s;
+            white-space: nowrap;
+        }
+        .new-session-btn:hover { background: rgba(96,165,250,0.18); }
+
+        #session-list {
+            flex: 1;
+            overflow-y: auto;
+            padding: 6px;
+            display: flex;
+            flex-direction: column;
+            gap: 2px;
+        }
+        .session-item {
+            padding: 7px 10px;
+            border-radius: 6px;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            transition: background 0.12s;
+            min-width: 0;
+        }
+        .session-item:hover { background: rgba(255,255,255,0.04); }
+        .session-item.active { background: rgba(96,165,250,0.1); }
+        .session-item-body { flex: 1; min-width: 0; }
+        .session-title {
+            font-size: 12px;
+            color: #ccc;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+        .session-item.active .session-title { color: #60a5fa; }
+        .session-date {
+            font-size: 10px;
+            color: #444;
+            margin-top: 1px;
+        }
+        .session-del {
+            background: none;
+            border: none;
+            color: #333;
+            font-size: 14px;
+            cursor: pointer;
+            padding: 0 2px;
+            flex-shrink: 0;
+            line-height: 1;
+            transition: color 0.12s;
+            display: none;
+        }
+        .session-item:hover .session-del { display: block; }
+        .session-del:hover { color: #f87171; }
+
+        /* ── Main content ── */
+        #main {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+        }
+
+        /* ── Views ── */
+        .view { display: none; flex: 1; overflow: hidden; flex-direction: column; }
+        .view.active { display: flex; }
+
+        /* ── Chat view ── */
         #messages {
             flex: 1;
             overflow-y: auto;
@@ -87,8 +216,7 @@
         }
         .copy-btn {
             position: absolute;
-            bottom: 6px;
-            right: 6px;
+            bottom: 6px; right: 6px;
             background: #2a2a4a;
             border: 1px solid #3a3a5a;
             color: #888;
@@ -104,47 +232,20 @@
         .copy-btn.copied { color: #4ade80; }
         .msg.assistant p { margin-bottom: 8px; }
         .msg.assistant p:last-child { margin-bottom: 0; }
-        .msg.assistant pre {
-            background: #0d0d1a;
-            padding: 8px;
-            border-radius: 6px;
-            overflow-x: auto;
-            font-size: 13px;
-            margin: 6px 0;
-        }
-        .msg.assistant code {
-            font-family: 'SF Mono', 'Fira Code', monospace;
-            font-size: 13px;
-        }
-        .msg.error {
-            align-self: center;
-            background: #3b1111;
-            color: #f87171;
-            border: 1px solid #7f1d1d;
-            font-size: 13px;
-        }
-        .typing {
-            align-self: flex-start;
-            color: #666;
-            font-size: 13px;
-            padding: 8px 14px;
-        }
-        .typing::after {
-            content: '...';
-            animation: dots 1.2s steps(4, end) infinite;
-        }
-        @keyframes dots {
-            0%, 20% { content: ''; }
-            40% { content: '.'; }
-            60% { content: '..'; }
-            80%, 100% { content: '...'; }
-        }
+        .msg.assistant pre { background: #0d0d1a; padding: 8px; border-radius: 6px; overflow-x: auto; font-size: 13px; margin: 6px 0; }
+        .msg.assistant code { font-family: 'SF Mono', 'Fira Code', monospace; font-size: 13px; }
+        .msg.error { align-self: center; background: #3b1111; color: #f87171; border: 1px solid #7f1d1d; font-size: 13px; }
+        .typing { align-self: flex-start; color: #555; font-size: 13px; padding: 8px 14px; }
+        .typing::after { content: '...'; animation: dots 1.2s steps(4, end) infinite; }
+        @keyframes dots { 0%,20% { content: ''; } 40% { content: '.'; } 60% { content: '..'; } 80%,100% { content: '...'; } }
+
         #input-bar {
             padding: 12px 16px;
             background: #0d1525;
             border-top: 1px solid #1e3a5f;
             display: flex;
             gap: 8px;
+            flex-shrink: 0;
         }
         #input-bar textarea {
             flex: 1;
@@ -161,7 +262,7 @@
             max-height: 120px;
         }
         #input-bar textarea:focus { border-color: #60a5fa; }
-        #input-bar textarea::placeholder { color: #555; }
+        #input-bar textarea::placeholder { color: #444; }
         #input-bar button {
             background: #2563eb;
             color: white;
@@ -173,152 +274,439 @@
             cursor: pointer;
         }
         #input-bar button:hover { background: #3b82f6; }
-        #input-bar button:disabled { background: #333; color: #666; cursor: not-allowed; }
+        #input-bar button:disabled { background: #222; color: #555; cursor: not-allowed; }
+
+        /* ── Agents view ── */
+        #agents-view {
+            padding: 20px;
+            overflow-y: auto;
+        }
+        .agents-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            margin-bottom: 16px;
+        }
+        .agents-header h2 { font-size: 15px; font-weight: 600; color: #60a5fa; }
+        .refresh-btn {
+            background: none;
+            border: 1px solid #1e3a5f;
+            color: #555;
+            border-radius: 6px;
+            padding: 4px 10px;
+            font-size: 12px;
+            cursor: pointer;
+            transition: color 0.15s, border-color 0.15s;
+        }
+        .refresh-btn:hover { color: #aaa; border-color: #60a5fa; }
+
+        .agent-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(290px, 1fr));
+            gap: 12px;
+            margin-bottom: 24px;
+        }
+        .agent-card {
+            background: #0d1525;
+            border: 1px solid #1e3a5f;
+            border-radius: 10px;
+            overflow: hidden;
+            transition: border-color 0.2s;
+            display: flex;
+            flex-direction: column;
+        }
+        .agent-card:hover { border-color: #60a5fa; }
+        .agent-card.connected { border-color: #4ade80; }
+        .agent-card.error     { border-color: #f87171; }
+
+        .card-header {
+            padding: 10px 14px;
+            border-bottom: 1px solid #1a2540;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+        .card-sdot {
+            width: 8px; height: 8px; border-radius: 50%; background: #444; flex-shrink: 0;
+        }
+        .card-sdot.connected { background: #4ade80; animation: sdpulse 1.8s ease-in-out infinite; }
+        .card-sdot.error     { background: #f87171; }
+        @keyframes sdpulse { 0%,100% { opacity: 1; } 50% { opacity: 0.3; } }
+        .card-name {
+            font-family: ui-monospace, monospace;
+            font-size: 13px; font-weight: 600; color: #e0e0e0;
+            flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+        }
+        .card-badge {
+            font-size: 10px; text-transform: uppercase; letter-spacing: 0.05em;
+            padding: 2px 7px; border-radius: 3px; font-weight: 600; flex-shrink: 0;
+        }
+        .card-badge.connected { background: rgba(74,222,128,0.12); color: #4ade80; }
+        .card-badge.error     { background: rgba(248,113,113,0.12); color: #f87171; }
+        .card-body { padding: 10px 14px; flex: 1; display: flex; flex-direction: column; gap: 5px; }
+        .card-model { font-size: 13px; color: #aaa; }
+        .card-url { font-size: 11px; color: #444; font-family: ui-monospace, monospace; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .card-caps { display: flex; gap: 4px; flex-wrap: wrap; margin-top: 2px; }
+        .cap-tag {
+            font-size: 10px;
+            background: rgba(96,165,250,0.08);
+            color: #60a5fa;
+            border: 1px solid rgba(96,165,250,0.15);
+            border-radius: 3px;
+            padding: 1px 6px;
+        }
+
+        .section-title {
+            font-size: 11px; font-weight: 600; color: #444;
+            text-transform: uppercase; letter-spacing: 0.07em; margin-bottom: 8px;
+        }
+        .audit-list { display: flex; flex-direction: column; gap: 3px; }
+        .audit-row {
+            background: #0d1525; border: 1px solid #1a2540;
+            border-radius: 6px; padding: 6px 12px;
+            display: flex; align-items: center; gap: 10px; font-size: 12px;
+        }
+        .audit-type { font-family: ui-monospace, monospace; font-size: 11px; color: #60a5fa; flex-shrink: 0; width: 130px; overflow: hidden; text-overflow: ellipsis; }
+        .audit-tool { color: #ccc; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .audit-dec { flex-shrink: 0; font-size: 11px; font-weight: 600; width: 50px; text-align: right; }
+        .audit-dec.allow { color: #4ade80; }
+        .audit-dec.deny, .audit-dec.block, .audit-dec.blocked { color: #f87171; }
+        .audit-time { color: #333; flex-shrink: 0; font-family: ui-monospace, monospace; font-size: 11px; }
+        .empty-state { color: #444; font-size: 13px; text-align: center; padding: 24px; }
     </style>
 </head>
 <body>
     <header>
-        <div class="status-dot" id="status-dot"></div>
-        <h1 onclick="hardReload()" title="Click to reload (clear cache)">Agent-001</h1>
+        <button class="hamburger" id="hamburger" onclick="toggleSidebar()" title="Toggle sessions">☰</button>
+        <div class="hdr-dot" id="hdr-dot"></div>
+        <h1 onclick="hardReload()" title="Click to reload">Agent-001</h1>
+        <nav class="tabs">
+            <button class="active" onclick="switchTab('chat')" id="tab-chat">Chat</button>
+            <button onclick="switchTab('agents')" id="tab-agents">Agents</button>
+        </nav>
         <span class="model-badge" id="model-badge">connecting...</span>
     </header>
-    <div id="messages"></div>
-    <div id="input-bar">
-        <textarea id="input" placeholder="Send a message..." rows="1"></textarea>
-        <button id="send" onclick="sendMessage()">Send</button>
+
+    <div id="layout">
+        <!-- Session sidebar -->
+        <div id="sidebar">
+            <div class="sidebar-top">
+                <button class="new-session-btn" onclick="newSession()">+ New session</button>
+            </div>
+            <div id="session-list"></div>
+        </div>
+
+        <!-- Main content -->
+        <div id="main">
+            <!-- Chat view -->
+            <div class="view active" id="chat-view">
+                <div id="messages"></div>
+                <div id="input-bar">
+                    <textarea id="input" placeholder="Send a message..." rows="1"></textarea>
+                    <button id="send" onclick="sendMessage()">Send</button>
+                </div>
+            </div>
+
+            <!-- Agents view -->
+            <div class="view" id="agents-view">
+                <div class="agents-header">
+                    <h2>Registered Agents</h2>
+                    <button class="refresh-btn" onclick="loadAgents()">Refresh</button>
+                </div>
+                <div class="agent-grid" id="agent-grid">
+                    <div class="empty-state">Loading...</div>
+                </div>
+                <div class="section-title">Recent Audit Events</div>
+                <div class="audit-list" id="audit-list">
+                    <div class="empty-state">Loading...</div>
+                </div>
+            </div>
+        </div>
     </div>
 
     <script>
-        const messagesEl = document.getElementById('messages');
-        const inputEl = document.getElementById('input');
-        const sendBtn = document.getElementById('send');
-        const statusDot = document.getElementById('status-dot');
-        const modelBadge = document.getElementById('model-badge');
+        // ── Session store (localStorage) ──────────────────────────────────
+        const STORE_KEY = 'agent001_sessions';
 
+        function loadStore() {
+            try { return JSON.parse(localStorage.getItem(STORE_KEY)) || {}; } catch { return {}; }
+        }
+        function saveStore(store) {
+            localStorage.setItem(STORE_KEY, JSON.stringify(store));
+        }
+
+        let store = loadStore();
+        let currentSessionId = null;
         let conversationHistory = [];
 
-        // Auto-resize textarea
+        function genId() {
+            return 'sess_' + Date.now() + '_' + Math.random().toString(36).slice(2, 6);
+        }
+
+        function newSession() {
+            const id = genId();
+            store[id] = {
+                id,
+                title: 'New session',
+                created: new Date().toISOString(),
+                messages: [],
+            };
+            saveStore(store);
+            switchSession(id);
+            renderSessionList();
+            switchTab('chat');
+        }
+
+        function switchSession(id) {
+            if (!(id in store)) return;
+            currentSessionId = id;
+            conversationHistory = store[id].messages.map(m => ({ role: m.role, content: m.content }));
+            renderMessages();
+            renderSessionList();
+        }
+
+        function deleteSession(id, e) {
+            e.stopPropagation();
+            delete store[id];
+            saveStore(store);
+            if (currentSessionId === id) {
+                const ids = Object.keys(store);
+                if (ids.length) switchSession(ids[ids.length - 1]);
+                else newSession();
+            }
+            renderSessionList();
+        }
+
+        function updateSessionTitle(id, firstMsg) {
+            if (store[id]) {
+                store[id].title = firstMsg.slice(0, 40) + (firstMsg.length > 40 ? '…' : '');
+                saveStore(store);
+                renderSessionList();
+            }
+        }
+
+        function renderSessionList() {
+            const el = document.getElementById('session-list');
+            const ids = Object.keys(store).sort((a, b) =>
+                (store[b].created || '').localeCompare(store[a].created || ''));
+            if (!ids.length) {
+                el.innerHTML = '<div class="empty-state" style="font-size:11px;padding:16px;">No sessions</div>';
+                return;
+            }
+            el.innerHTML = ids.map(id => {
+                const s = store[id];
+                const date = s.created ? s.created.slice(0, 10) : '';
+                const active = id === currentSessionId ? ' active' : '';
+                return `<div class="session-item${active}" onclick="switchSession('${id}')">
+                    <div class="session-item-body">
+                        <div class="session-title">${esc(s.title)}</div>
+                        <div class="session-date">${date}</div>
+                    </div>
+                    <button class="session-del" onclick="deleteSession('${id}', event)" title="Delete">✕</button>
+                </div>`;
+            }).join('');
+        }
+
+        function renderMessages() {
+            const el = document.getElementById('messages');
+            el.innerHTML = '';
+            const sess = store[currentSessionId];
+            if (!sess) return;
+            sess.messages.forEach(m => _appendMessage(m.role, m.content, false));
+            el.scrollTop = el.scrollHeight;
+        }
+
+        // ── Sidebar toggle ────────────────────────────────────────────────
+        let sidebarOpen = true;
+        function toggleSidebar() {
+            sidebarOpen = !sidebarOpen;
+            document.getElementById('sidebar').classList.toggle('closed', !sidebarOpen);
+        }
+
+        // ── Tab switching ─────────────────────────────────────────────────
+        let currentTab = 'chat';
+        function switchTab(tab) {
+            currentTab = tab;
+            document.querySelectorAll('.view').forEach(v => v.classList.remove('active'));
+            document.querySelectorAll('nav.tabs button').forEach(b => b.classList.remove('active'));
+            document.getElementById(tab + '-view').classList.add('active');
+            document.getElementById('tab-' + tab).classList.add('active');
+            if (tab === 'agents') loadAgents();
+            if (tab === 'chat') inputEl.focus();
+        }
+
+        // ── Chat ──────────────────────────────────────────────────────────
+        const messagesEl = document.getElementById('messages');
+        const inputEl    = document.getElementById('input');
+        const sendBtn    = document.getElementById('send');
+        const hdrDot     = document.getElementById('hdr-dot');
+        const modelBadge = document.getElementById('model-badge');
+
         inputEl.addEventListener('input', () => {
             inputEl.style.height = 'auto';
             inputEl.style.height = Math.min(inputEl.scrollHeight, 120) + 'px';
         });
-
-        inputEl.addEventListener('keydown', (e) => {
-            if (e.key === 'Enter' && !e.shiftKey) {
-                e.preventDefault();
-                sendMessage();
-            }
+        inputEl.addEventListener('keydown', e => {
+            if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendMessage(); }
         });
 
-        function addMessage(role, content) {
+        function _appendMessage(role, content, scroll = true) {
             const div = document.createElement('div');
             div.className = `msg ${role}`;
             if (role === 'assistant') {
                 div.innerHTML = marked.parse(content);
-                div.dataset.raw = content;
-                const copyBtn = document.createElement('button');
-                copyBtn.className = 'copy-btn';
-                copyBtn.textContent = 'Copy';
-                copyBtn.onclick = () => {
-                    navigator.clipboard.writeText(content).then(() => {
-                        copyBtn.textContent = 'Copied';
-                        copyBtn.classList.add('copied');
-                        setTimeout(() => {
-                            copyBtn.textContent = 'Copy';
-                            copyBtn.classList.remove('copied');
-                        }, 1500);
-                    });
-                };
-                div.appendChild(copyBtn);
+                const btn = document.createElement('button');
+                btn.className = 'copy-btn';
+                btn.textContent = 'Copy';
+                btn.onclick = () => navigator.clipboard.writeText(content).then(() => {
+                    btn.textContent = 'Copied'; btn.classList.add('copied');
+                    setTimeout(() => { btn.textContent = 'Copy'; btn.classList.remove('copied'); }, 1500);
+                });
+                div.appendChild(btn);
+            } else if (role === 'error') {
+                div.textContent = content;
             } else {
                 div.textContent = content;
             }
             messagesEl.appendChild(div);
-            messagesEl.scrollTop = messagesEl.scrollHeight;
+            if (scroll) messagesEl.scrollTop = messagesEl.scrollHeight;
             return div;
         }
 
         function showTyping() {
             const div = document.createElement('div');
-            div.className = 'typing';
-            div.id = 'typing-indicator';
-            div.textContent = 'Thinking';
+            div.className = 'typing'; div.id = 'typing-indicator'; div.textContent = 'Thinking';
             messagesEl.appendChild(div);
             messagesEl.scrollTop = messagesEl.scrollHeight;
         }
-
-        function hideTyping() {
-            const el = document.getElementById('typing-indicator');
-            if (el) el.remove();
-        }
+        function hideTyping() { document.getElementById('typing-indicator')?.remove(); }
 
         async function sendMessage() {
             const text = inputEl.value.trim();
-            if (!text) return;
+            if (!text || !currentSessionId) return;
 
-            inputEl.value = '';
-            inputEl.style.height = 'auto';
-            sendBtn.disabled = true;
+            inputEl.value = ''; inputEl.style.height = 'auto'; sendBtn.disabled = true;
 
-            addMessage('user', text);
+            // First message in session → update title
+            if (store[currentSessionId].messages.length === 0) {
+                updateSessionTitle(currentSessionId, text);
+            }
+
+            store[currentSessionId].messages.push({ role: 'user', content: text });
+            saveStore(store);
             conversationHistory.push({ role: 'user', content: text });
+            _appendMessage('user', text);
             showTyping();
 
             try {
                 const resp = await fetch('/chat', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({
-                        message: text,
-                        history: conversationHistory.slice(-20)
-                    }),
+                    body: JSON.stringify({ message: text, history: conversationHistory.slice(-20) }),
                 });
                 hideTyping();
-
                 if (!resp.ok) {
                     const err = await resp.json().catch(() => ({ error: resp.statusText }));
-                    addMessage('error', err.error || 'Request failed');
+                    _appendMessage('error', err.error || 'Request failed');
                 } else {
                     const data = await resp.json();
                     const reply = data.response || '(empty response)';
-                    addMessage('assistant', reply);
+                    store[currentSessionId].messages.push({ role: 'assistant', content: reply });
+                    saveStore(store);
                     conversationHistory.push({ role: 'assistant', content: reply });
+                    _appendMessage('assistant', reply);
                 }
             } catch (e) {
                 hideTyping();
-                addMessage('error', 'Connection error: ' + e.message);
+                _appendMessage('error', 'Connection error: ' + e.message);
             }
 
             sendBtn.disabled = false;
             inputEl.focus();
         }
 
+        // ── Status poll ───────────────────────────────────────────────────
         async function checkStatus() {
             try {
-                const resp = await fetch('/status');
-                const data = await resp.json();
-                statusDot.className = 'status-dot connected';
-                const endpoints = Object.keys(data.endpoints || {});
-                if (endpoints.length > 0) {
-                    const ep = data.endpoints[endpoints[0]];
-                    modelBadge.textContent = ep.model || endpoints[0];
+                const data = await fetch('/status').then(r => r.json());
+                const eps = Object.keys(data.endpoints || {});
+                if (eps.length > 0) {
+                    hdrDot.className = 'hdr-dot connected';
+                    modelBadge.textContent = data.endpoints[eps[0]].model || eps[0];
                 } else {
+                    hdrDot.className = 'hdr-dot error';
                     modelBadge.textContent = 'no model registered';
-                    statusDot.className = 'status-dot error';
                 }
             } catch {
-                statusDot.className = 'status-dot error';
+                hdrDot.className = 'hdr-dot error';
                 modelBadge.textContent = 'offline';
             }
         }
 
+        // ── Agents tab ────────────────────────────────────────────────────
+        async function loadAgents() {
+            const grid = document.getElementById('agent-grid');
+            const auditList = document.getElementById('audit-list');
+
+            let status = {};
+            try { status = await fetch('/status').then(r => r.json()); } catch {}
+
+            const endpoints = status.endpoints || {};
+            const names = Object.keys(endpoints);
+
+            grid.innerHTML = names.length === 0
+                ? '<div class="empty-state">No agents registered.<br>POST /endpoints to add one.</div>'
+                : names.map(name => {
+                    const ep = endpoints[name];
+                    const caps = (ep.capabilities || []).map(c => `<span class="cap-tag">${esc(c)}</span>`).join('');
+                    return `<div class="agent-card connected">
+                        <div class="card-header">
+                            <span class="card-sdot connected"></span>
+                            <span class="card-name">${esc(name)}</span>
+                            <span class="card-badge connected">online</span>
+                        </div>
+                        <div class="card-body">
+                            <div class="card-model">${esc(ep.model || name)}</div>
+                            <div class="card-url">${esc(ep.url || '')}</div>
+                            ${caps ? `<div class="card-caps">${caps}</div>` : ''}
+                        </div>
+                    </div>`;
+                }).join('');
+
+            let events = [];
+            try { events = (await fetch('/v1/audit?limit=20').then(r => r.json())).events || []; } catch {}
+
+            auditList.innerHTML = events.length === 0
+                ? '<div class="empty-state">No audit events yet.</div>'
+                : events.slice().reverse().map(e => {
+                    const dec = e.decision || e.outcome || '';
+                    const decClass = dec === 'allow' ? 'allow' : 'deny';
+                    return `<div class="audit-row">
+                        <span class="audit-type">${esc(e.event_type || '')}</span>
+                        <span class="audit-tool">${esc(e.tool_name || '—')}</span>
+                        <span class="audit-dec ${decClass}">${esc(dec)}</span>
+                        <span class="audit-time">${(e.timestamp || '').slice(11, 19)}</span>
+                    </div>`;
+                }).join('');
+        }
+
+        function esc(s) {
+            return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+        }
+
         function hardReload() {
-            if ('caches' in window) {
-                caches.keys().then(names => names.forEach(n => caches.delete(n)));
-            }
+            if ('caches' in window) caches.keys().then(ns => ns.forEach(n => caches.delete(n)));
             location.reload(true);
         }
 
+        // ── Boot ──────────────────────────────────────────────────────────
+        renderSessionList();
+        const existingIds = Object.keys(store);
+        if (existingIds.length) {
+            switchSession(existingIds[existingIds.length - 1]);
+        } else {
+            newSession();
+        }
         checkStatus();
         setInterval(checkStatus, 30000);
         inputEl.focus();
