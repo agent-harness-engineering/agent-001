@@ -273,6 +273,14 @@ async def handle_endpoint_delete(request: web.Request) -> web.Response:
     return web.json_response({"status": "removed", "endpoint": name})
 
 
+async def handle_task_list(request: web.Request) -> web.Response:
+    """GET /tasks — list all tasks with their current status."""
+    state = request.app["state"]
+    tasks = list(state["tasks"].values())
+    tasks.sort(key=lambda t: t.get("submitted_at", ""), reverse=True)
+    return web.json_response({"tasks": tasks})
+
+
 async def handle_task_submit(request: web.Request) -> web.Response:
     """Accept a task for orchestration. Dispatches to the best available endpoint."""
     try:
@@ -787,6 +795,7 @@ def create_app() -> web.Application:
     app.router.add_delete("/endpoints/{name}", handle_endpoint_delete)
 
     # Task dispatch
+    app.router.add_get("/tasks", handle_task_list)
     app.router.add_post("/task", handle_task_submit)
 
     # MCP
