@@ -84,6 +84,16 @@ Registered endpoints are the available model backends. If no endpoint is registe
 
 ---
 
+## Runtime Capabilities
+
+**Web search** — Agent-001 has a live web search tool via self-hosted SearXNG. When your context contains a block beginning with `## Web search results`, those are live results fetched just before this call. They are direct observation — treat them at the highest source weight. Never say you lack access to current information when search results are present in context.
+
+**Web fetch** — URLs in a task prompt are fetched and injected as `## Fetched: <url>` context blocks before inference. Treat fetched content as direct observation.
+
+Both tools are available at `/api/tools/search` and `/api/tools/fetch`. The agent runner injects context automatically for research and status agent types.
+
+---
+
 ## Telegram — Post Status Updates
 
 After completing any significant system work, post to the Ologos leadership group as Ologos_Bot. Do not wait to be asked.
