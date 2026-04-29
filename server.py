@@ -709,16 +709,35 @@ async def handle_notify(request: web.Request) -> web.Response:
     return web.json_response({"ok": True, "id": note["id"]})
 
 
+async def handle_notifications_poll(request: web.Request) -> web.Response:
+    """GET /api/notifications?since=<unix_ts> — polling fallback when SSE unavailable."""
+    try:
+        since = float(request.rel_url.query.get("since", "0"))
+    except (ValueError, TypeError):
+        since = 0.0
+    notes = []
+    for n in _notifications:
+        try:
+            if datetime.fromisoformat(n["ts"]).timestamp() > since:
+                notes.append(n)
+        except Exception:
+            pass
+    return web.json_response({"notifications": notes})
+
+
 async def handle_notification_stream(request: web.Request) -> web.Response:
     """GET /api/notifications/stream — SSE stream of agent completion notifications."""
     q: asyncio.Queue = asyncio.Queue(maxsize=20)
     _notification_queues.add(q)
 
-    resp = web.Response(
-        content_type="text/event-stream",
-        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
-    )
+    resp = web.StreamResponse(headers={
+        "Content-Type": "text/event-stream",
+        "Cache-Control": "no-cache",
+        "X-Accel-Buffering": "no",
+        "Access-Control-Allow-Origin": "*",
+    })
     await resp.prepare(request)
+    log.info("Notification SSE connected: %s", request.remote)
 
     # Send any buffered notifications from the last minute
     cutoff = (datetime.now(timezone.utc).timestamp() - 60)
@@ -805,21 +824,24 @@ async def handle_agent_stream(request: web.Request) -> web.Response:
         status = store.load(agent_id)
         if not status:
             return web.json_response({"error": "Agent not found"}, status=404)
-        resp = web.Response(
-            content_type="text/event-stream",
-            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
-        )
+        resp = web.StreamResponse(headers={
+            "Content-Type": "text/event-stream",
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+        })
         await resp.prepare(request)
-        payload = json.dumps({"status": status.status, "output": status.output or ""})
+        payload = json.dumps({"status": status.status, "output": status.output or "", "event_type": "done"})
         await resp.write(f"data: {payload}\n\n".encode())
         await resp.write_eof()
         return resp
 
     queue: asyncio.Queue = live["queue"]
-    resp = web.Response(
-        content_type="text/event-stream",
-        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
-    )
+    resp = web.StreamResponse(headers={
+        "Content-Type": "text/event-stream",
+        "Cache-Control": "no-cache",
+        "X-Accel-Buffering": "no",
+        "Access-Control-Allow-Origin": "*",
+    })
     await resp.prepare(request)
 
     try:
@@ -1065,6 +1087,7 @@ def create_app() -> web.Application:
 
     # Agent runner (P1)
     app.router.add_post("/api/notify", handle_notify)
+    app.router.add_get("/api/notifications", handle_notifications_poll)
     app.router.add_get("/api/notifications/stream", handle_notification_stream)
     app.router.add_post("/api/agents/spawn", handle_agent_spawn)
     app.router.add_get("/api/agents", handle_agent_list)

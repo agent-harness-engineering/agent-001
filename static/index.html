@@ -439,7 +439,7 @@
             <div class="view active" id="chat-view">
                 <div id="messages"></div>
                 <div id="input-bar">
-                    <textarea id="input" placeholder="Send a message..." rows="1"></textarea>
+                    <textarea id="input" placeholder="Send a message… or /spawn [type] prompt to launch an agent" rows="1"></textarea>
                     <button id="send" onclick="sendMessage()">Send</button>
                 </div>
             </div>
@@ -636,6 +636,60 @@
         }
         function hideTyping() { document.getElementById('typing-indicator')?.remove(); }
 
+        // ── Spawn intent detection & execution ───────────────────────────
+        function shouldIntercept(text) {
+            if (text.startsWith('/spawn')) return true;
+            const lower = text.toLowerCase();
+            return !!(
+                lower.match(/\bspawn\s+(?:a\s+)?(?:\w+\s+)?agent\b/) ||
+                lower.match(/\bcreate\s+(?:a\s+)?(?:\w+\s+)?agent\b/) ||
+                lower.match(/\blaunch\s+(?:a\s+)?(?:\w+\s+)?agent\b/) ||
+                lower.match(/\brun\s+(?:a\s+)?(?:\w+\s+)?agent\b/)
+            );
+        }
+
+        async function handleSpawn(text) {
+            const TYPES = ['general', 'research', 'sysadmin', 'status'];
+            let type = 'general', prompt = text;
+
+            if (text.startsWith('/spawn')) {
+                const args = text.slice(6).trim().split(/\s+/);
+                if (TYPES.includes(args[0])) { type = args.shift(); }
+                prompt = args.join(' ');
+            } else {
+                const lower = text.toLowerCase();
+                if (/\bstatus\b|\bhealth\b|\bmonitor\b/.test(lower)) type = 'status';
+                else if (/\bsysadmin\b|\binfra\b|\bops\b/.test(lower)) type = 'sysadmin';
+                else if (/\bresearch\b|\banalyz\b|\binvestigat\b/.test(lower)) type = 'research';
+                const m = text.match(/\bagent\s+(?:to|that|which|for|:)?\s*/i);
+                if (m) prompt = text.slice(m.index + m[0].length).trim() || text;
+            }
+
+            if (!prompt) {
+                injectSystemMessage({ level: 'error', message: 'Spawn needs a prompt. Try: `/spawn status check disk usage`' });
+                return;
+            }
+
+            injectSystemMessage({ level: 'info', message: `Spawning **${type}** agent…` });
+            try {
+                const resp = await fetch('/api/agents/spawn', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ prompt, agent_type: type }),
+                });
+                const data = await resp.json();
+                if (data.agent_id) {
+                    injectSystemMessage({ level: 'success', message: `Agent \`${data.agent_id}\` queued (${type})` });
+                    addJobCard(data.agent_id, type, prompt, 'queued');
+                    connectAgentSSE(data.agent_id);
+                } else {
+                    injectSystemMessage({ level: 'error', message: `Spawn failed: ${data.error || 'check Agents tab — no endpoint?'}` });
+                }
+            } catch (e) {
+                injectSystemMessage({ level: 'error', message: `Spawn error: ${e.message}` });
+            }
+        }
+
         async function sendMessage() {
             const text = inputEl.value.trim();
             if (!text || !currentSessionId) return;
@@ -649,6 +703,15 @@
 
             store[currentSessionId].messages.push({ role: 'user', content: text });
             saveStore(store);
+
+            // ── Intercept spawn commands before hitting the model ─────────
+            if (shouldIntercept(text)) {
+                _appendMessage('user', text);
+                await handleSpawn(text);
+                sendBtn.disabled = false; inputEl.focus();
+                return;
+            }
+
             conversationHistory.push({ role: 'user', content: text });
             _appendMessage('user', text);
             showTyping();
@@ -896,16 +959,39 @@
         }
 
         function connectNotificationStream() {
-            const es = new EventSource('/api/notifications/stream');
-            es.onmessage = (e) => {
-                try { injectSystemMessage(JSON.parse(e.data)); } catch {}
-            };
-            es.onerror = () => {
-                es.close();
-                setTimeout(connectNotificationStream, 5000);
-            };
+            try {
+                const es = new EventSource('/api/notifications/stream');
+                es.addEventListener('open', () => {
+                    console.log('[agent-001] notification stream connected');
+                });
+                es.onmessage = (e) => {
+                    try { injectSystemMessage(JSON.parse(e.data)); } catch {}
+                };
+                es.onerror = (err) => {
+                    console.warn('[agent-001] notification stream error, retrying in 5s', err);
+                    es.close();
+                    setTimeout(connectNotificationStream, 5000);
+                };
+            } catch (e) {
+                console.error('[agent-001] EventSource init failed:', e);
+                setTimeout(connectNotificationStream, 10000);
+            }
         }
         connectNotificationStream();
+
+        // Polling fallback — catches any notifications SSE missed
+        let _notifSince = (Date.now() / 1000) - 5;
+        async function pollNotifications() {
+            try {
+                const d = await fetch(`/api/notifications?since=${_notifSince}`).then(r => r.json());
+                const ns = d.notifications || [];
+                if (ns.length > 0) {
+                    ns.forEach(n => injectSystemMessage(n));
+                    _notifSince = Date.now() / 1000;
+                }
+            } catch {}
+        }
+        setInterval(pollNotifications, 10000);
 
         checkStatus();
         setInterval(checkStatus, 30000);
