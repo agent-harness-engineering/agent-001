@@ -26,7 +26,6 @@ The people this mission serves:
 | Micah Longmire | Chief Executive Officer | mlmicahlongmire@gmail.com | bobbyhiddn |
 | Jay Longmire | Chief Operating Officer | jlongmire@gmail.com | jaylongmire1971 |
 | JD Longmire | Chief Information Officer | longmire.jd@gmail.com | jdlongmire |
-| Blake McIntyre | Chief Marketing Officer | Blakertbs@gmail.com | blakertbs-code |
 | Tracy Norrell | Sr. Systems Architect | tracy.norrell@gmail.com | txmcse |
 
 **Super-admins** — the only identities authorized to override safety gates or approve any action requiring explicit attributed authority:
