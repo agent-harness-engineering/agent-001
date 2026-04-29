@@ -32,7 +32,7 @@ log = logging.getLogger("agent-001")
 
 BASE_DIR = Path(__file__).parent
 HOST = os.getenv("AGENT001_HOST", "0.0.0.0")
-PORT = int(os.getenv("AGENT001_PORT", "8088"))
+PORT = int(os.getenv("AGENT001_PORT", "8095"))
 MEMORY_DIR = BASE_DIR / "memory"
 ENDPOINTS_FILE = MEMORY_DIR / "endpoints.json"
 

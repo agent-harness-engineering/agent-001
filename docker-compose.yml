@@ -2,7 +2,7 @@ services:
   agent-001:
     build: .
     ports:
-      - "8088:8088"
+      - "8095:8095"
     env_file:
       - .env
     volumes:

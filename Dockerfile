@@ -28,6 +28,6 @@ COPY . .
 # See governance/docker-mount-spec.md for the full Kubernetes equivalent.
 # ---------------------------------------------------------------------------
 
-EXPOSE 8088
+EXPOSE 8095
 
 CMD ["python", "server.py"]
