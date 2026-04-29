@@ -25,6 +25,7 @@ from gates import PermissionGate, PermissionPolicy, PermissionDecision
 from governance import GovernanceGuard
 from proxy import ToolProxy, CanonicalToolCall, ValidationError
 from runner import AgentRunner, AGENT_TYPES, StatusStore
+from tools import fetch_url, search, SSRFError
 
 logging.basicConfig(
     level=logging.INFO,
@@ -55,6 +56,8 @@ def push_notification(note: dict) -> None:
 BASE_DIR = Path(__file__).parent
 HOST = os.getenv("AGENT001_HOST", "0.0.0.0")
 PORT = int(os.getenv("AGENT001_PORT", "8095"))
+SEARXNG_URL = os.getenv("SEARXNG_URL", "http://telogos-searxng:8080")
+
 MEMORY_DIR = BASE_DIR / "memory"
 ENDPOINTS_FILE = MEMORY_DIR / "endpoints.json"
 HISTORY_DIR = BASE_DIR / "history"
@@ -701,6 +704,69 @@ async def handle_v1_health(request: web.Request) -> web.Response:
 
 
 # ---------------------------------------------------------------------------
+# Web tools routes
+# ---------------------------------------------------------------------------
+
+async def handle_tools_search(request: web.Request) -> web.Response:
+    """GET /api/tools/search?q=<query>&limit=5 — search via SearXNG."""
+    q = request.rel_url.query.get("q", "").strip()
+    if not q:
+        return web.json_response({"error": "Required query param: q"}, status=400)
+    try:
+        limit = int(request.rel_url.query.get("limit", "5"))
+        limit = max(1, min(limit, 20))
+    except (ValueError, TypeError):
+        limit = 5
+
+    result = await search(request.app["http_session"], q, SEARXNG_URL, limit=limit)
+
+    # P0 audit
+    audit_store: AuditStore = request.app["p0"]["audit_store"]
+    audit_store.record(AuditEvent(
+        event_id=str(uuid.uuid4()),
+        timestamp=datetime.now(timezone.utc).isoformat(),
+        event_type="tool_call",
+        session_id=request.headers.get("X-Session-Id", "anon"),
+        agent_id="api",
+        tool_name="web_search",
+        tool_call_id=None,
+        decision="allow",
+        outcome="error" if "error" in result else "success",
+        details={"query": q, "limit": limit},
+    ))
+
+    return web.json_response(result)
+
+
+async def handle_tools_fetch(request: web.Request) -> web.Response:
+    """GET /api/tools/fetch?url=<url> — fetch a web page and return extracted text."""
+    url = request.rel_url.query.get("url", "").strip()
+    if not url:
+        return web.json_response({"error": "Required query param: url"}, status=400)
+
+    result = await fetch_url(request.app["http_session"], url)
+
+    # P0 audit
+    audit_store: AuditStore = request.app["p0"]["audit_store"]
+    audit_store.record(AuditEvent(
+        event_id=str(uuid.uuid4()),
+        timestamp=datetime.now(timezone.utc).isoformat(),
+        event_type="tool_call",
+        session_id=request.headers.get("X-Session-Id", "anon"),
+        agent_id="api",
+        tool_name="web_fetch",
+        tool_call_id=None,
+        decision="allow",
+        outcome="error" if "error" in result else "success",
+        details={"url": url},
+    ))
+
+    if "error" in result:
+        return web.json_response(result, status=400)
+    return web.json_response(result)
+
+
+# ---------------------------------------------------------------------------
 # Notification routes
 # ---------------------------------------------------------------------------
 
@@ -1071,11 +1137,12 @@ async def on_startup(app: web.Application) -> None:
         system_prompt=system_prompt,
         compact_prompt=compact_prompt,
         notify_callback=_on_agent_complete,
+        searxng_url=SEARXNG_URL,
     )
     app["runner"] = agent_runner
     app["status_store"] = status_store
-    log.info("Agent runner initialised | agents_dir: %s | types: %s",
-             AGENTS_DIR, list(AGENT_TYPES.keys()))
+    log.info("Agent runner initialised | agents_dir: %s | types: %s | searxng: %s",
+             AGENTS_DIR, list(AGENT_TYPES.keys()), SEARXNG_URL)
 
 
 async def on_cleanup(app: web.Application) -> None:
@@ -1103,6 +1170,10 @@ def create_app() -> web.Application:
     # Task dispatch
     app.router.add_get("/tasks", handle_task_list)
     app.router.add_post("/task", handle_task_submit)
+
+    # Web tools
+    app.router.add_get("/api/tools/search", handle_tools_search)
+    app.router.add_get("/api/tools/fetch", handle_tools_fetch)
 
     # Agent runner (P1)
     app.router.add_post("/api/notify", handle_notify)

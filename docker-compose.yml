@@ -5,7 +5,17 @@ services:
       - "8095:8095"
     env_file:
       - .env
+    environment:
+      - SEARXNG_URL=http://telogos-searxng:8080
     volumes:
       - ./memory:/app/memory
       - ./history:/app/history
     restart: unless-stopped
+    networks:
+      - default
+      - chatbot
+
+networks:
+  chatbot:
+    external: true
+    name: telogos-chatbot_default

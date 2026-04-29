@@ -18,6 +18,7 @@ import aiohttp
 
 from .agent_types import AGENT_TYPES, AgentTypeConfig
 from .status_store import AgentStatus, StatusStore
+from tools import fetch_url, search
 
 log = logging.getLogger("agent-001.runner")
 
@@ -40,6 +41,7 @@ class AgentRunner:
         system_prompt: str,
         compact_prompt: str = "",
         notify_callback=None,
+        searxng_url: str = "",
     ) -> None:
         self._store = status_store
         self._http = http_session
@@ -47,6 +49,7 @@ class AgentRunner:
         self._system_prompt = system_prompt
         self._compact_prompt = compact_prompt or system_prompt
         self._notify = notify_callback  # async fn(agent_id, status, summary)
+        self._searxng_url = searxng_url
 
     def spawn(
         self,
@@ -87,6 +90,39 @@ class AgentRunner:
         log.info("Spawned agent %s (type=%s endpoint=%s)", agent_id, agent_type, ep_name)
         return agent_id
 
+    async def _gather_context(self, prompt: str, agent_type: str) -> str:
+        """Fetch web context for research/status agents and return an injected block."""
+        if not self._searxng_url:
+            return ""
+
+        import re
+        lines = []
+
+        # Fetch any URLs mentioned in the prompt
+        urls = re.findall(r'https?://[^\s"\'<>]+', prompt)
+        for url in urls[:2]:  # cap at 2 fetches per agent
+            result = await fetch_url(self._http, url, max_chars=4000)
+            if "error" not in result:
+                lines.append(f"## Fetched: {url}\n{result['text'][:3000]}")
+            else:
+                lines.append(f"## Fetch failed: {url} — {result['error']}")
+
+        # Search for research/status agents (only if no URLs already fetched)
+        if agent_type in ("research", "status") and not urls:
+            query = prompt[:200]
+            result = await search(self._http, query, self._searxng_url, limit=5)
+            if "results" in result and result["results"]:
+                lines.append("## Web search results")
+                for r in result["results"]:
+                    snippet = r.get("snippet", "")[:300]
+                    lines.append(f"- [{r['title']}]({r['url']})\n  {snippet}")
+            elif "error" in result:
+                log.warning("Search context gather failed: %s", result["error"])
+
+        if not lines:
+            return ""
+        return "\n\n---\n**Web context gathered before this task:**\n\n" + "\n\n".join(lines) + "\n\n---\n\n"
+
     async def _run(self, agent: dict, type_cfg: AgentTypeConfig, ep_name: str) -> None:
         agent_id = agent["id"]
         queue: asyncio.Queue = agent["queue"]
@@ -109,8 +145,14 @@ class AgentRunner:
             await emit("done", {"status": "failed"})
             return
 
-        # Build prompt with type prefix + governance
-        full_prompt = type_cfg.prompt_prefix + agent["status"].prompt
+        # Gather web context for research/status agents (or any prompt with URLs)
+        web_context = await self._gather_context(
+            agent["status"].prompt,
+            agent["status"].agent_type,
+        )
+
+        # Build prompt with type prefix + web context + task
+        full_prompt = type_cfg.prompt_prefix + web_context + agent["status"].prompt
 
         url = ep["url"].rstrip("/") + "/chat/completions"
         headers = {"Content-Type": "application/json"}
