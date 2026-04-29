@@ -374,27 +374,41 @@
         .audit-time { color: #333; flex-shrink: 0; font-family: ui-monospace, monospace; font-size: 11px; }
         .empty-state { color: #444; font-size: 13px; text-align: center; padding: 24px; }
 
-        /* Task cards */
-        .task-card {
+        /* Job cards (spawned agents) */
+        .job-card {
             background: #0d1525;
             border: 1px solid #1e3a5f;
             border-radius: 10px;
             overflow: hidden;
-            display: flex;
-            flex-direction: column;
             transition: border-color 0.2s;
         }
-        .task-card.dispatching { border-color: #60a5fa; }
-        .task-card.completed   { border-color: #4ade80; }
-        .task-card.failed      { border-color: #f87171; }
-        .task-card .card-sdot.dispatching { background: #60a5fa; animation: sdpulse 1.2s ease-in-out infinite; }
-        .task-card .card-sdot.completed   { background: #4ade80; }
-        .task-card .card-sdot.failed      { background: #f87171; }
-        .task-desc {
-            font-size: 12px; color: #bbb;
-            overflow: hidden; display: -webkit-box;
-            -webkit-line-clamp: 2; -webkit-box-orient: vertical;
+        .job-card.queued      { border-color: #555; }
+        .job-card.running     { border-color: #60a5fa; }
+        .job-card.completed   { border-color: #4ade80; }
+        .job-card.failed      { border-color: #f87171; }
+        .job-card.interrupted { border-color: #fb923c; }
+        .job-header { padding: 10px 14px; border-bottom: 1px solid #1a2540; display: flex; align-items: center; gap: 8px; }
+        .job-sdot { width: 8px; height: 8px; border-radius: 50%; background: #444; flex-shrink: 0; }
+        .job-sdot.queued      { background: #555; }
+        .job-sdot.running     { background: #60a5fa; animation: sdpulse 1.2s ease-in-out infinite; }
+        .job-sdot.completed   { background: #4ade80; }
+        .job-sdot.failed      { background: #f87171; }
+        .job-sdot.interrupted { background: #fb923c; }
+        .job-id   { font-family: ui-monospace, monospace; font-size: 11px; color: #555; flex: 1; overflow: hidden; text-overflow: ellipsis; }
+        .job-type { font-size: 10px; background: rgba(96,165,250,0.1); color: #60a5fa; border: 1px solid rgba(96,165,250,0.2); border-radius: 3px; padding: 1px 6px; flex-shrink: 0; }
+        .job-cancel { background: none; border: none; color: #444; font-size: 13px; cursor: pointer; padding: 0 4px; transition: color 0.15s; }
+        .job-cancel:hover { color: #f87171; }
+        .job-body { padding: 10px 14px; }
+        .job-prompt { font-size: 12px; color: #bbb; margin-bottom: 6px; overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
+        .job-output {
+            font-size: 12px; color: #8b9dc3; font-family: ui-monospace, monospace;
+            background: #070d1a; border: 1px solid #1a2540; border-radius: 6px;
+            padding: 8px; max-height: 160px; overflow-y: auto; white-space: pre-wrap;
+            word-break: break-word; margin-top: 6px; display: none;
         }
+        .job-output.visible { display: block; }
+        .job-meta { font-size: 11px; color: #333; font-family: ui-monospace, monospace; margin-top: 4px; }
+        .task-desc { font-size: 12px; color: #bbb; overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
         .task-meta { font-size: 11px; color: #444; font-family: ui-monospace, monospace; }
     </style>
 </head>
@@ -433,16 +447,30 @@
             <!-- Agents view -->
             <div class="view" id="agents-view">
                 <div class="agents-header">
-                    <h2>Registered Agents</h2>
-                    <button class="refresh-btn" onclick="loadAgents()">Refresh</button>
+                    <h2>Agents</h2>
+                    <div style="display:flex;gap:6px;align-items:center;">
+                        <select id="spawn-type" style="background:#111827;border:1px solid #1e3a5f;color:#aaa;border-radius:6px;padding:4px 8px;font-size:12px;">
+                            <option value="general">general</option>
+                            <option value="research">research</option>
+                            <option value="sysadmin">sysadmin</option>
+                            <option value="status">status</option>
+                        </select>
+                        <input id="spawn-prompt" type="text" placeholder="Agent prompt…" style="background:#111827;border:1px solid #1e3a5f;color:#e0e0e0;border-radius:6px;padding:5px 10px;font-size:12px;width:220px;outline:none;">
+                        <button class="refresh-btn" onclick="spawnAgent()" style="color:#60a5fa;border-color:#60a5fa;">Spawn</button>
+                        <button class="refresh-btn" onclick="loadAgents()">Refresh</button>
+                    </div>
                 </div>
-                <div class="agent-grid" id="agent-grid">
+
+                <div class="section-title">Registered Endpoints</div>
+                <div class="agent-grid" id="agent-grid" style="margin-bottom:20px;">
                     <div class="empty-state">Loading...</div>
                 </div>
-                <div class="section-title" style="margin-top:20px;">Active Tasks</div>
-                <div class="agent-grid" id="task-grid" style="margin-bottom:20px;">
-                    <div class="empty-state">Loading...</div>
+
+                <div class="section-title">Running Agents</div>
+                <div id="job-list" style="display:flex;flex-direction:column;gap:10px;margin-bottom:20px;">
+                    <div class="empty-state">No agents yet.</div>
                 </div>
+
                 <div class="section-title">Recent Audit Events</div>
                 <div class="audit-list" id="audit-list">
                     <div class="empty-state">Loading...</div>
@@ -671,11 +699,111 @@
         }
 
         // ── Agents tab ────────────────────────────────────────────────────
-        let agentsPoller = null;
+        // Track active SSE connections keyed by agent_id
+        const _sseConns = {};
+
+        async function spawnAgent() {
+            const prompt = document.getElementById('spawn-prompt').value.trim();
+            const agent_type = document.getElementById('spawn-type').value;
+            if (!prompt) return;
+            document.getElementById('spawn-prompt').value = '';
+            try {
+                const resp = await fetch('/api/agents/spawn', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ prompt, agent_type }),
+                });
+                const data = await resp.json();
+                if (data.agent_id) {
+                    addJobCard(data.agent_id, agent_type, prompt, 'queued');
+                    connectAgentSSE(data.agent_id);
+                } else {
+                    alert(data.error || 'Spawn failed');
+                }
+            } catch (e) {
+                alert('Spawn error: ' + e.message);
+            }
+        }
+
+        document.addEventListener('keydown', e => {
+            if (e.key === 'Enter' && document.activeElement === document.getElementById('spawn-prompt')) {
+                spawnAgent();
+            }
+        });
+
+        function addJobCard(agent_id, agent_type, prompt, status) {
+            const list = document.getElementById('job-list');
+            // Remove empty state
+            list.querySelectorAll('.empty-state').forEach(el => el.remove());
+
+            const card = document.createElement('div');
+            card.className = `job-card ${status}`;
+            card.id = `job-${agent_id}`;
+            card.innerHTML = `
+                <div class="job-header">
+                    <span class="job-sdot ${status}"></span>
+                    <span class="job-id">${esc(agent_id)}</span>
+                    <span class="job-type">${esc(agent_type)}</span>
+                    <button class="job-cancel" onclick="cancelAgent('${agent_id}')" title="Cancel">✕</button>
+                </div>
+                <div class="job-body">
+                    <div class="job-prompt">${esc(prompt)}</div>
+                    <div class="job-output" id="out-${agent_id}"></div>
+                    <div class="job-meta" id="meta-${agent_id}">spawned</div>
+                </div>`;
+            list.prepend(card);
+        }
+
+        function updateJobCard(agent_id, status, text) {
+            const card = document.getElementById(`job-${agent_id}`);
+            if (!card) return;
+            card.className = `job-card ${status}`;
+            card.querySelector('.job-sdot').className = `job-sdot ${status}`;
+            if (text) {
+                const out = document.getElementById(`out-${agent_id}`);
+                out.textContent = text;
+                out.classList.add('visible');
+            }
+        }
+
+        function setJobMeta(agent_id, text) {
+            const el = document.getElementById(`meta-${agent_id}`);
+            if (el) el.textContent = text;
+        }
+
+        function connectAgentSSE(agent_id) {
+            if (_sseConns[agent_id]) return;
+            const es = new EventSource(`/api/agents/${agent_id}/stream`);
+            _sseConns[agent_id] = es;
+            es.onmessage = (e) => {
+                const data = JSON.parse(e.data);
+                const et = data.event_type;
+                const ts = (data.timestamp || '').slice(11, 19);
+                if (et === 'status') {
+                    updateJobCard(agent_id, data.status, null);
+                    setJobMeta(agent_id, `${data.status} · ${ts}`);
+                } else if (et === 'output') {
+                    updateJobCard(agent_id, 'running', data.text);
+                } else if (et === 'error') {
+                    updateJobCard(agent_id, 'failed', data.message);
+                    setJobMeta(agent_id, `failed · ${ts}`);
+                } else if (et === 'done') {
+                    updateJobCard(agent_id, data.status, null);
+                    setJobMeta(agent_id, `${data.status} · ${ts}`);
+                    es.close();
+                    delete _sseConns[agent_id];
+                }
+            };
+            es.onerror = () => { es.close(); delete _sseConns[agent_id]; };
+        }
+
+        async function cancelAgent(agent_id) {
+            await fetch(`/api/agents/${agent_id}/cancel`, { method: 'POST' });
+            updateJobCard(agent_id, 'interrupted', null);
+        }
 
         async function loadAgents() {
             const grid      = document.getElementById('agent-grid');
-            const taskGrid  = document.getElementById('task-grid');
             const auditList = document.getElementById('audit-list');
 
             // Endpoints
@@ -684,7 +812,7 @@
             const endpoints = status.endpoints || {};
             const names = Object.keys(endpoints);
             grid.innerHTML = names.length === 0
-                ? '<div class="empty-state">No agents registered.<br>POST /endpoints to add one.</div>'
+                ? '<div class="empty-state">No endpoints registered.<br>POST /endpoints to add one.</div>'
                 : names.map(name => {
                     const ep = endpoints[name];
                     const caps = (ep.capabilities || []).map(c => `<span class="cap-tag">${esc(c)}</span>`).join('');
@@ -702,40 +830,25 @@
                     </div>`;
                 }).join('');
 
-            // Tasks
-            let tasks = [];
-            try { tasks = (await fetch('/tasks').then(r => r.json())).tasks || []; } catch {}
-            if (tasks.length === 0) {
-                taskGrid.innerHTML = '<div class="empty-state">No tasks yet.</div>';
-            } else {
-                taskGrid.innerHTML = tasks.map(t => {
-                    const st = t.status || 'unknown';
-                    const ts = (t.submitted_at || '').slice(11, 16);
-                    const done = t.completed_at ? ` · done ${t.completed_at.slice(11,16)}` : '';
-                    const err = t.error ? `<div class="task-meta" style="color:#f87171">${esc(t.error.slice(0,80))}</div>` : '';
-                    return `<div class="task-card ${st}">
-                        <div class="card-header">
-                            <span class="card-sdot ${st}"></span>
-                            <span class="card-name">${esc(t.id)}</span>
-                            <span class="card-badge ${st === 'completed' ? 'connected' : st === 'failed' ? 'error' : ''}">${esc(st)}</span>
-                        </div>
-                        <div class="card-body">
-                            <div class="task-desc">${esc(t.description || '')}</div>
-                            <div class="task-meta">${esc(t.endpoint || '')} · ${ts}${done}</div>
-                            ${err}
-                        </div>
-                    </div>`;
-                }).join('');
-            }
-
-            // Auto-refresh while any task is still running
-            const hasActive = tasks.some(t => t.status === 'dispatching');
-            if (hasActive && !agentsPoller) {
-                agentsPoller = setInterval(loadAgents, 3000);
-            } else if (!hasActive && agentsPoller) {
-                clearInterval(agentsPoller);
-                agentsPoller = null;
-            }
+            // Restore persisted agents from disk on tab open
+            try {
+                const d = await fetch('/api/agents').then(r => r.json());
+                const jobs = d.agents || [];
+                const list = document.getElementById('job-list');
+                jobs.forEach(a => {
+                    if (!document.getElementById(`job-${a.agent_id}`)) {
+                        addJobCard(a.agent_id, a.agent_type, a.prompt, a.status);
+                        if (a.output) updateJobCard(a.agent_id, a.status, a.output);
+                        setJobMeta(a.agent_id, `${a.status}${a.completed_at ? ' · ' + a.completed_at.slice(11,19) : ''}`);
+                        if (a.status === 'running' || a.status === 'queued') {
+                            connectAgentSSE(a.agent_id);
+                        }
+                    }
+                });
+                if (jobs.length === 0 && !list.querySelector('.job-card')) {
+                    list.innerHTML = '<div class="empty-state">No agents yet. Use Spawn to create one.</div>';
+                }
+            } catch {}
 
             // Audit events
             let events = [];
@@ -752,13 +865,6 @@
                         <span class="audit-time">${(e.timestamp || '').slice(11, 19)}</span>
                     </div>`;
                 }).join('');
-        }
-
-        // Stop poller when leaving agents tab
-        const origSwitchTab = switchTab;
-        function switchTab(tab) {
-            if (tab !== 'agents' && agentsPoller) { clearInterval(agentsPoller); agentsPoller = null; }
-            origSwitchTab(tab);
         }
 
         function esc(s) {

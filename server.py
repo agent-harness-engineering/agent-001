@@ -7,6 +7,7 @@ P0 safety layer: ToolProxy → PermissionGate → AuditStore → GovernanceGuard
 wired via /v1/process, /v1/audit, and /v1/health endpoints.
 """
 
+import asyncio
 import json
 import logging
 import os
@@ -23,6 +24,7 @@ from audit import AuditStore, AuditEvent
 from gates import PermissionGate, PermissionPolicy, PermissionDecision
 from governance import GovernanceGuard
 from proxy import ToolProxy, CanonicalToolCall, ValidationError
+from runner import AgentRunner, AGENT_TYPES, StatusStore
 
 logging.basicConfig(
     level=logging.INFO,
@@ -36,6 +38,7 @@ PORT = int(os.getenv("AGENT001_PORT", "8095"))
 MEMORY_DIR = BASE_DIR / "memory"
 ENDPOINTS_FILE = MEMORY_DIR / "endpoints.json"
 HISTORY_DIR = BASE_DIR / "history"
+AGENTS_DIR = BASE_DIR / "memory" / "agents"
 
 # 4M module files
 GOVERNANCE_MODULES = ["mission.md", "mind.md", "morals.md", "memory_module.md"]
@@ -662,6 +665,120 @@ async def handle_v1_health(request: web.Request) -> web.Response:
 
 
 # ---------------------------------------------------------------------------
+# Agent runner routes
+# ---------------------------------------------------------------------------
+
+async def handle_agent_spawn(request: web.Request) -> web.Response:
+    """POST /api/agents/spawn — create a background agent job.
+
+    Body: { "prompt": "...", "agent_type": "general|research|sysadmin|status", "endpoint": "name" }
+    Returns: { "agent_id": "...", "status": "queued" }
+    """
+    try:
+        body = await request.json()
+    except json.JSONDecodeError:
+        return web.json_response({"error": "Invalid JSON"}, status=400)
+
+    prompt = body.get("prompt", "").strip()
+    if not prompt:
+        return web.json_response({"error": "Required field: prompt"}, status=400)
+
+    agent_type = body.get("agent_type", "general")
+    endpoint_name = body.get("endpoint")
+    runner: AgentRunner = request.app["runner"]
+
+    try:
+        agent_id = runner.spawn(prompt=prompt, agent_type=agent_type, endpoint_name=endpoint_name)
+    except ValueError as e:
+        return web.json_response({"error": str(e)}, status=503)
+
+    return web.json_response({"agent_id": agent_id, "status": "queued"}, status=201)
+
+
+async def handle_agent_list(request: web.Request) -> web.Response:
+    """GET /api/agents — list all agents (live + completed from disk)."""
+    store: StatusStore = request.app["status_store"]
+    agents = store.list_all()
+
+    # Overlay live status for running agents
+    result = []
+    for a in agents:
+        live = AgentRunner.get_live(a.agent_id)
+        d = a.to_dict()
+        if live:
+            d["status"] = live["status"].status
+        result.append(d)
+
+    return web.json_response({"agents": result, "types": list(AGENT_TYPES.keys())})
+
+
+async def handle_agent_stream(request: web.Request) -> web.Response:
+    """GET /api/agents/{agent_id}/stream — SSE event stream for a live agent."""
+    agent_id = request.match_info["agent_id"]
+    live = AgentRunner.get_live(agent_id)
+
+    if not live:
+        # Agent finished — return stored status as a single done event
+        store: StatusStore = request.app["status_store"]
+        status = store.load(agent_id)
+        if not status:
+            return web.json_response({"error": "Agent not found"}, status=404)
+        resp = web.Response(
+            content_type="text/event-stream",
+            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+        )
+        await resp.prepare(request)
+        payload = json.dumps({"status": status.status, "output": status.output or ""})
+        await resp.write(f"data: {payload}\n\n".encode())
+        await resp.write_eof()
+        return resp
+
+    queue: asyncio.Queue = live["queue"]
+    resp = web.Response(
+        content_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
+    await resp.prepare(request)
+
+    try:
+        while True:
+            try:
+                event = await asyncio.wait_for(queue.get(), timeout=25.0)
+            except asyncio.TimeoutError:
+                # Keepalive comment
+                await resp.write(b": keepalive\n\n")
+                continue
+
+            payload = json.dumps(event)
+            await resp.write(f"data: {payload}\n\n".encode())
+
+            if event.get("event_type") == "done":
+                break
+    except (ConnectionResetError, asyncio.CancelledError):
+        pass
+    finally:
+        await resp.write_eof()
+
+    return resp
+
+
+async def handle_agent_cancel(request: web.Request) -> web.Response:
+    """POST /api/agents/{agent_id}/cancel — signal a running agent to stop."""
+    agent_id = request.match_info["agent_id"]
+    if AgentRunner.cancel(agent_id):
+        return web.json_response({"status": "cancelling", "agent_id": agent_id})
+    return web.json_response({"error": "Agent not found or already finished"}, status=404)
+
+
+async def handle_agent_types(request: web.Request) -> web.Response:
+    """GET /api/agent-types — list available agent types."""
+    return web.json_response({
+        name: {"description": cfg.description, "capabilities": cfg.capabilities}
+        for name, cfg in AGENT_TYPES.items()
+    })
+
+
+# ---------------------------------------------------------------------------
 # App lifecycle
 # ---------------------------------------------------------------------------
 
@@ -792,6 +909,38 @@ async def on_startup(app: web.Application) -> None:
         MAESTRO_DEFAULT_POLICY,
     )
 
+    # -----------------------------------------------------------------------
+    # Initialise agent runner (P1)
+    # -----------------------------------------------------------------------
+    status_store = StatusStore(AGENTS_DIR)
+
+    async def _telegram_notify(agent_id: str, status: str, summary: str) -> None:
+        tg_token = os.getenv("TELEGRAM_BOT_TOKEN", "")
+        tg_chat = os.getenv("TELEGRAM_CHAT_ID", "")
+        if not tg_token or not tg_chat:
+            return
+        import urllib.parse
+        text = f"Agent `{agent_id}` {status}\n{summary[:200]}"
+        url = f"https://api.telegram.org/bot{tg_token}/sendMessage"
+        params = urllib.parse.urlencode({"chat_id": tg_chat, "text": text, "parse_mode": "Markdown"})
+        try:
+            async with app["http_session"].post(url + "?" + params) as r:
+                pass
+        except Exception as exc:
+            log.warning("Telegram notify failed: %s", exc)
+
+    agent_runner = AgentRunner(
+        status_store=status_store,
+        http_session=app["http_session"],
+        endpoints=app["state"]["endpoints"],
+        system_prompt=system_prompt,
+        notify_callback=_telegram_notify,
+    )
+    app["runner"] = agent_runner
+    app["status_store"] = status_store
+    log.info("Agent runner initialised | agents_dir: %s | types: %s",
+             AGENTS_DIR, list(AGENT_TYPES.keys()))
+
 
 async def on_cleanup(app: web.Application) -> None:
     await app["http_session"].close()
@@ -818,6 +967,13 @@ def create_app() -> web.Application:
     # Task dispatch
     app.router.add_get("/tasks", handle_task_list)
     app.router.add_post("/task", handle_task_submit)
+
+    # Agent runner (P1)
+    app.router.add_post("/api/agents/spawn", handle_agent_spawn)
+    app.router.add_get("/api/agents", handle_agent_list)
+    app.router.add_get("/api/agents/{agent_id}/stream", handle_agent_stream)
+    app.router.add_post("/api/agents/{agent_id}/cancel", handle_agent_cancel)
+    app.router.add_get("/api/agent-types", handle_agent_types)
 
     # MCP
     app.router.add_get("/mcp/tools", handle_mcp_tools)
