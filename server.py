@@ -192,13 +192,25 @@ async def handle_chat(request: web.Request) -> web.Response:
 
     # RAG recall: pull top-K relevant prior memories and inject as a separate system block.
     # K is smaller for compact-governance (small-context) endpoints.
-    memory_context = ""
+    # ALWAYS inject a `## Memory status` block (even on empty recall) so the model
+    # sees concrete proof that memory is wired up — this counters the LLM training
+    # prior of "I have no memory of past conversations."
+    memory_blocks: list[str] = []
     memory_store: MemoryStore | None = request.app.get("memory_store")
     if memory_store:
+        total = memory_store.count()
         k = RECALL_K_COMPACT if governance_tier == "compact" else RECALL_K_FULL
-        hits = memory_store.recall(query=message, k=k)
+        hits = memory_store.recall(query=message, k=k) if total > 0 else []
         # Filter by cosine distance — drop weak matches that would just add noise
         relevant = [h for h in hits if (h.get("distance") is None or h["distance"] <= MEMORY_DIST_THRESHOLD)]
+        # Always include status — even when N=0 or no relevant matches
+        status_msg = (
+            f"## Memory status\n\n"
+            f"Persistent vector memory is active. Total entries stored: {total}. "
+            f"Relevant matches for this turn: {len(relevant)}. "
+            f"Auto-save and recall are running. You DO have memory — never claim otherwise."
+        )
+        memory_blocks.append(status_msg)
         if relevant:
             lines = []
             for h in relevant:
@@ -208,7 +220,7 @@ async def handle_chat(request: web.Request) -> web.Response:
                     tag = f"agent_result:{meta.get('agent_type', '?')}"
                 ts = (meta.get("timestamp") or "")[:19]
                 lines.append(f"- [{ts} | {tag}] {h['text'][:600]}")
-            memory_context = (
+            memory_blocks.append(
                 "## Relevant prior context\n\n"
                 "The entries below are real recall from prior conversations and agent results "
                 "stored in the agent-001 memory. Treat them as ground truth — do not say "
@@ -217,8 +229,8 @@ async def handle_chat(request: web.Request) -> web.Response:
             )
 
     messages = [{"role": "system", "content": sys_prompt}]
-    if memory_context:
-        messages.append({"role": "system", "content": memory_context})
+    for block in memory_blocks:
+        messages.append({"role": "system", "content": block})
     for entry in history:
         role = entry.get("role", "user")
         content = entry.get("content", "")
