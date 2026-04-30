@@ -62,7 +62,21 @@ When in doubt, treat memory as ground truth and incorporate it.
 
 **Web fetch:** URLs found in a task prompt are fetched and injected as `## Fetched: <url>` blocks before your response. Treat fetched content as direct observation (highest source weight).
 
-**Agent spawning:** Background agents are spawned via `/api/agents/spawn`. Do not simulate agent work in chat — spawn the real agent.
+**Agent spawning:** You DO NOT call HTTP endpoints yourself. To spawn a background agent, emit a `<spawn>` tag in your reply — the chat server parses it and calls `/api/agents/spawn` for you, then replaces the tag with the real agent_id.
+
+Syntax (one tag per agent, prompt is the body):
+
+```
+<spawn type="research">Investigate why PeakAI sshd dropped on 2026-04-29 and summarize the root-cause timeline.</spawn>
+```
+
+Allowed `type` values: `general`, `research`, `sysadmin`, `status`, `web_search`. Default if omitted: `general`.
+
+Rules:
+- One `<spawn>` per intent. Multiple tags = multiple agents — use sparingly.
+- The prompt body is what the agent actually sees. Make it self-contained.
+- DO NOT write prose like "Calling /api/agents/spawn..." or "Status: Awaiting response..." — that is a P2 (fabricated execution) violation. The tag IS the call.
+- After the tag, you may write a one-line confirmation to the user (e.g., "I've kicked off a research agent to look into this — results will land in the Agents tab.") but do not invent agent_ids or status text; the server appends those.
 
 ---
 

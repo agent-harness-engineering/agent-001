@@ -11,6 +11,7 @@ import asyncio
 import json
 import logging
 import os
+import re
 import ssl
 import uuid
 from dataclasses import asdict
@@ -166,6 +167,56 @@ async def dispatch_to_endpoint(
 
 
 # ---------------------------------------------------------------------------
+# Spawn intent parsing — converts model `<spawn type="...">prompt</spawn>`
+# tags in chat replies into real runner.spawn() calls. Without this the
+# model can only role-play API calls in prose; the tag IS the dispatch.
+# ---------------------------------------------------------------------------
+
+_SPAWN_TAG_RE = re.compile(
+    r'<spawn(?:\s+type=["\']([^"\']+)["\'])?\s*>(.*?)</spawn>',
+    re.DOTALL | re.IGNORECASE,
+)
+
+
+def parse_and_spawn_from_reply(
+    reply: str,
+    runner: "AgentRunner",
+    endpoint_name: str,
+    valid_types: set[str],
+) -> str:
+    """Find <spawn> tags in `reply`, spawn each, and rewrite the tag in place.
+
+    Returns the modified reply with each tag replaced by a confirmation line
+    containing the real agent_id (or an error line on failure).
+    """
+    def _replace(match: re.Match) -> str:
+        agent_type = (match.group(1) or "general").strip().lower()
+        prompt = (match.group(2) or "").strip()
+        if not prompt:
+            return "_Spawn skipped: empty prompt._"
+        if agent_type not in valid_types:
+            return f"_Spawn skipped: unknown type `{agent_type}` (allowed: {', '.join(sorted(valid_types))})._"
+        try:
+            agent_id = runner.spawn(
+                prompt=prompt,
+                agent_type=agent_type,
+                endpoint_name=endpoint_name,
+            )
+            log.info(
+                "Chat-spawn: agent=%s type=%s prompt_chars=%d",
+                agent_id, agent_type, len(prompt),
+            )
+            return (
+                f"_Spawned `{agent_id}` ({agent_type}) — see Agents tab for live status._"
+            )
+        except Exception as exc:  # noqa: BLE001
+            log.warning("Chat-spawn failed (type=%s): %s", agent_type, exc)
+            return f"_Spawn failed ({agent_type}): {exc}_"
+
+    return _SPAWN_TAG_RE.sub(_replace, reply)
+
+
+# ---------------------------------------------------------------------------
 # Routes
 # ---------------------------------------------------------------------------
 
@@ -272,6 +323,15 @@ async def handle_chat(request: web.Request) -> web.Response:
             data = await resp.json()
             choices = data.get("choices", [])
             reply = choices[0]["message"]["content"] if choices else "(no response)"
+            # Spawn intercept: convert <spawn type="..."> tags into real agents.
+            runner: AgentRunner | None = request.app.get("runner")
+            if runner is not None and "<spawn" in reply.lower():
+                reply = parse_and_spawn_from_reply(
+                    reply,
+                    runner=runner,
+                    endpoint_name=endpoint_name,
+                    valid_types=set(AGENT_TYPES.keys()),
+                )
             _log_chat(request, message, reply, endpoint_name)
             # Auto-save both turns into RAG memory
             if memory_store:
