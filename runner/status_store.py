@@ -23,6 +23,7 @@ class AgentStatus:
     output_chars: int = 0
     events: list[dict] = field(default_factory=list)
     qa_verdict: dict | None = None  # qa-harness verdict (None until reviewed)
+    web_context: str | None = None  # search/fetch context the agent saw at runtime
 
     def to_dict(self) -> dict:
         d = asdict(self)

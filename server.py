@@ -1226,6 +1226,13 @@ async def on_startup(app: web.Application) -> None:
         prompt = stored.prompt if stored else ""
         agent_type = stored.agent_type if stored else "unknown"
         output = stored.output if stored and stored.output else summary
+        # Pass web context (search results, fetched URLs) the agent saw at runtime
+        # to the reviewer so factuality is grounded in the same evidence the
+        # agent used. Free latency uplift — already-fetched material.
+        web_context = stored.web_context if stored else None
+        review_context = prompt
+        if web_context:
+            review_context = f"{prompt}\n\n{web_context.strip()}"
 
         # 0. QA review (only on terminal substantive states; skip 'interrupted' / empty)
         verdict: dict | None = None
@@ -1236,11 +1243,12 @@ async def on_startup(app: web.Application) -> None:
                     session=app["http_session"],
                     subject_type="agent_result",
                     subject_text=output,
-                    context=prompt,
+                    context=review_context,
                     metadata={
                         "agent_id": agent_id,
                         "agent_type": agent_type,
                         "status": status,
+                        "had_web_context": bool(web_context),
                     },
                 )
                 blocked = should_block(verdict, QA_BLOCK_ON_FAIL)

@@ -150,6 +150,12 @@ class AgentRunner:
             agent["status"].prompt,
             agent["status"].agent_type,
         )
+        # Persist web_context onto the AgentStatus so QA review can see exactly
+        # what evidence the agent had access to (passed through to qa-harness as
+        # part of the review `context` field — uplifts factuality scoring at
+        # zero extra latency).
+        if web_context:
+            self._store.update(agent_id, web_context=web_context)
 
         # Build prompt with type prefix + web context + task
         full_prompt = type_cfg.prompt_prefix + web_context + agent["status"].prompt
