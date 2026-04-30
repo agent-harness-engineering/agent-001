@@ -72,20 +72,26 @@ async def list_containers() -> dict[str, Any]:
     return await loop.run_in_executor(None, _list_containers_blocking)
 
 
-def format_docker_table(snapshot: dict[str, Any]) -> str:
-    """Render a docker snapshot as markdown."""
+def format_docker_table(snapshot: dict[str, Any], max_rows: int = 20) -> str:
+    """Render a docker snapshot as markdown, capped at `max_rows` rows."""
     if not snapshot.get("available"):
         return f"_Docker introspection unavailable — {snapshot.get('error', 'unknown')}_"
     containers = snapshot.get("containers") or []
     if not containers:
         return "_No running containers reported by docker daemon._"
-    lines = ["| Container | Image | State | Health | Started |",
-             "|---|---|---|---|---|"]
-    for c in containers:
-        image_short = c["image"].split("/")[-1][:40]
+    # Stable order — alphabetical by name
+    containers = sorted(containers, key=lambda c: c["name"])
+    shown = containers[:max_rows]
+    overflow = len(containers) - len(shown)
+    lines = ["| Container | Image | State | Health |",
+             "|---|---|---|---|"]
+    for c in shown:
+        # Tighter image trim for compact context
+        image_short = c["image"].split("/")[-1][:24]
         health = c["health"] or "—"
-        lines.append(
-            f"| {c['name']} | {image_short} | {c['status']} | {health} | {c['started_at']} |"
-        )
-    lines.append(f"\n**Summary:** {snapshot['count']} running container(s).")
+        lines.append(f"| {c['name'][:32]} | {image_short} | {c['status']} | {health} |")
+    summary = f"\n**Summary:** {snapshot['count']} running container(s)."
+    if overflow > 0:
+        summary += f" Showing first {len(shown)} alphabetically; +{overflow} more not shown."
+    lines.append(summary)
     return "\n".join(lines)

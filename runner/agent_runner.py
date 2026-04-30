@@ -94,7 +94,7 @@ class AgentRunner:
         log.info("Spawned agent %s (type=%s endpoint=%s)", agent_id, agent_type, ep_name)
         return agent_id
 
-    async def _gather_context(self, prompt: str, agent_type: str) -> str:
+    async def _gather_context(self, prompt: str, agent_type: str, ep_name: str | None = None) -> str:
         """Fetch web + ecosystem context for the agent and return an injected block.
 
         Always injects current UTC timestamp (fixes training-data date drift).
@@ -139,7 +139,12 @@ class AgentRunner:
         # Live ecosystem health — only for status / sysadmin. Real HTTP probes
         # against declared services + docker introspection (when socket mounted).
         # This is what closes the "agents don't actually see the ecosystem" gap.
+        # Trim aggressively for compact-context endpoints (Gemma 4K) so we don't
+        # blow n_ctx with 40+ container rows.
         if agent_type in ("status", "sysadmin"):
+            ep = self._endpoints.get(ep_name) if ep_name and ep_name in self._endpoints else None
+            is_compact = bool(ep and ep.get("governance") == "compact")
+            docker_max_rows = 12 if is_compact else 25
             try:
                 http_results = await probe_http(self._http)
                 lines.append(
@@ -157,7 +162,7 @@ class AgentRunner:
                 lines.append(
                     "## Live container state (docker daemon)\n\n"
                     "Read directly from the docker socket on PeakAI moments before this task.\n\n"
-                    + format_docker_table(docker_snap)
+                    + format_docker_table(docker_snap, max_rows=docker_max_rows)
                 )
             except Exception as exc:  # noqa: BLE001
                 log.warning("Docker probe failed: %s", exc)
@@ -193,6 +198,7 @@ class AgentRunner:
         web_context = await self._gather_context(
             agent["status"].prompt,
             agent["status"].agent_type,
+            ep_name=ep_name,
         )
         # Persist web_context onto the AgentStatus so QA review can see exactly
         # what evidence the agent had access to (passed through to qa-harness as
