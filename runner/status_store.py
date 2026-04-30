@@ -22,6 +22,7 @@ class AgentStatus:
     output: str | None = None   # final response text
     output_chars: int = 0
     events: list[dict] = field(default_factory=list)
+    qa_verdict: dict | None = None  # qa-harness verdict (None until reviewed)
 
     def to_dict(self) -> dict:
         d = asdict(self)

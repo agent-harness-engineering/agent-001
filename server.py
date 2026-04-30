@@ -26,6 +26,7 @@ from governance import GovernanceGuard
 from proxy import ToolProxy, CanonicalToolCall, ValidationError
 from runner import AgentRunner, AGENT_TYPES, StatusStore
 from runner.memory_store import MemoryStore
+from runner.qa_gate import QAGate, should_block
 from tools import fetch_url, search, SSRFError
 
 logging.basicConfig(
@@ -67,6 +68,11 @@ CHROMA_DIR = BASE_DIR / "memory" / "chroma_db"
 RECALL_K_FULL = int(os.getenv("MEMORY_RECALL_K_FULL", "8"))
 RECALL_K_COMPACT = int(os.getenv("MEMORY_RECALL_K_COMPACT", "3"))
 MEMORY_DIST_THRESHOLD = float(os.getenv("MEMORY_DIST_THRESHOLD", "0.6"))
+QA_HARNESS_URL = os.getenv("QA_HARNESS_URL", "http://100.100.214.61:8096")
+QA_HARNESS_ENABLED = os.getenv("QA_HARNESS_ENABLED", "true").lower() == "true"
+QA_HARNESS_TIMEOUT = float(os.getenv("QA_HARNESS_TIMEOUT", "30"))
+QA_BLOCK_ON_FAIL = os.getenv("QA_BLOCK_ON_FAIL", "true").lower() == "true"
+QA_CIRCUIT_BREAKER_THRESHOLD = int(os.getenv("QA_CIRCUIT_BREAKER_THRESHOLD", "5"))
 
 # 4M module files
 GOVERNANCE_MODULES = ["mission.md", "mind.md", "morals.md", "memory_module.md"]
@@ -1204,36 +1210,90 @@ async def on_startup(app: web.Application) -> None:
     app["memory_store"] = memory_store
     log.info("Memory store registered | dir=%s", CHROMA_DIR)
 
+    qa_gate = QAGate(
+        url=QA_HARNESS_URL,
+        enabled=QA_HARNESS_ENABLED,
+        timeout_seconds=QA_HARNESS_TIMEOUT,
+        circuit_breaker_threshold=QA_CIRCUIT_BREAKER_THRESHOLD,
+    )
+    app["qa_gate"] = qa_gate
+    log.info("QA gate ready | url=%s | enabled=%s | block_on_fail=%s",
+             QA_HARNESS_URL, QA_HARNESS_ENABLED, QA_BLOCK_ON_FAIL)
+
     async def _on_agent_complete(agent_id: str, status: str, summary: str) -> None:
+        # Look up the canonical record once — used by QA, memory, and notification
+        stored = status_store.load(agent_id)
+        prompt = stored.prompt if stored else ""
+        agent_type = stored.agent_type if stored else "unknown"
+        output = stored.output if stored and stored.output else summary
+
+        # 0. QA review (only on terminal substantive states; skip 'interrupted' / empty)
+        verdict: dict | None = None
+        blocked = False
+        if status in ("completed", "failed") and output:
+            try:
+                verdict = await qa_gate.review(
+                    session=app["http_session"],
+                    subject_type="agent_result",
+                    subject_text=output,
+                    context=prompt,
+                    metadata={
+                        "agent_id": agent_id,
+                        "agent_type": agent_type,
+                        "status": status,
+                    },
+                )
+                blocked = should_block(verdict, QA_BLOCK_ON_FAIL)
+                # Persist verdict on the AgentStatus
+                status_store.update(agent_id, qa_verdict=verdict)
+                log.info("QA verdict | agent=%s | verdict=%s | advisory=%s | blocked=%s",
+                         agent_id, verdict.get("verdict"), verdict.get("advisory", False), blocked)
+            except Exception as exc:
+                log.warning("QA review error: %s", exc)
+                verdict = None
+
         # 1. In-chat notification (pushes to all connected chat SSE streams)
         status_icon = {"completed": "Done", "failed": "Failed", "interrupted": "Stopped"}.get(status, status.title())
+        msg = f"**{status_icon}** `{agent_id}`"
+        if summary:
+            msg += f": {summary[:160]}"
+        if verdict and not verdict.get("advisory"):
+            msg += f"  · QA: **{verdict.get('verdict','?')}**"
+            if blocked:
+                msg += " (blocked from chat fold + memory save)"
+        elif verdict and verdict.get("advisory"):
+            msg += f"  · QA: advisory ({verdict.get('reason_code', 'unhealthy')})"
         note = {
             "id": uuid.uuid4().hex[:8],
             "agent_id": agent_id,
             "status": status,
-            "message": f"**{status_icon}** `{agent_id}`" + (f": {summary[:160]}" if summary else ""),
+            "message": msg,
             "summary": summary,
-            "level": "success" if status == "completed" else "error",
+            "level": "error" if blocked or status != "completed" else "success",
+            "qa_verdict": verdict,
             "ts": datetime.now(timezone.utc).isoformat(),
         }
         push_notification(note)
 
-        # 1b. Save terminal-state results to RAG memory
-        if status in ("completed", "failed") and summary:
+        # 1b. Save terminal-state results to RAG memory — gated by QA
+        if status in ("completed", "failed") and output and not blocked:
             try:
-                stored = status_store.load(agent_id)
-                prompt = stored.prompt if stored else ""
-                agent_type = stored.agent_type if stored else "unknown"
-                output = stored.output if stored and stored.output else summary
                 text = f"Task: {prompt}\nAgent type: {agent_type}\nStatus: {status}\nResult:\n{output}"
-                memory_store.save(text, {
+                meta = {
                     "source": "agent_result",
                     "agent_id": agent_id,
                     "agent_type": agent_type,
                     "status": status,
-                })
+                }
+                if verdict:
+                    meta["qa_verdict"] = verdict.get("verdict", "unknown")
+                    if verdict.get("score") is not None:
+                        meta["qa_score"] = str(verdict.get("score"))
+                memory_store.save(text, meta)
             except Exception as exc:
                 log.warning("Memory save (agent_result) failed: %s", exc)
+        elif blocked:
+            log.info("Memory save skipped — QA blocked agent_id=%s", agent_id)
 
         # 2. Telegram (optional)
         tg_token = os.getenv("TELEGRAM_BOT_TOKEN", "")

@@ -976,6 +976,7 @@
                     <span class="job-sdot ${status}"></span>
                     <span class="job-id">${esc(agent_id)}</span>
                     <span class="job-type">${esc(agent_type)}</span>
+                    <span class="job-qa" id="qa-${agent_id}" style="display:none;font-size:10px;padding:1px 6px;border-radius:9px;margin-left:4px;"></span>
                     <button class="job-cancel" onclick="cancelAgent('${agent_id}')" title="Cancel">✕</button>
                 </div>
                 <div class="job-body">
@@ -1005,6 +1006,7 @@
 
         // Fold a completed agent's result back into the chat session that spawned it.
         // Idempotent — uses _foldedResults to dedupe across SSE done + polling.
+        // QA-gated: results with verdict=fail (non-advisory) are blocked from fold.
         async function foldAgentResult(agent_id) {
             if (_foldedResults.has(agent_id)) return;
             const sessionId = _agentSessions[agent_id];
@@ -1017,8 +1019,25 @@
             } catch { return; }
             if (!record) return;
             if (!['completed', 'failed', 'interrupted'].includes(record.status)) return;
+            // QA gate — block fold if reviewer rejected the output (advisory verdicts pass through)
+            const v = record.qa_verdict || null;
+            if (v && !v.advisory && v.verdict === 'fail') {
+                _foldedResults.add(agent_id);
+                _saveFoldedResults();
+                if (sessionId === currentSessionId) {
+                    const marker = document.createElement('div');
+                    marker.style.cssText = 'align-self:center;font-size:11px;color:#f87171;font-style:italic;padding:4px 8px;border-top:1px dashed #7f1d1d;border-bottom:1px dashed #7f1d1d;margin:4px 0;max-width:90%;';
+                    marker.textContent = `↳ ${agent_id} blocked from chat by QA: ${(v.reason || '').slice(0, 200)}`;
+                    messagesEl.appendChild(marker);
+                    messagesEl.scrollTop = messagesEl.scrollHeight;
+                }
+                return;
+            }
             const output = (record.output || record.error || '(no output)').toString();
-            const note = `[Background agent \`${agent_id}\` (${record.agent_type}) ${record.status}.\nOriginal task: ${record.prompt}\nResult:\n${output}\n]\nThe above is real output from a background agent that ran on the user's behalf. Treat it as ground truth and incorporate it into your next response.`;
+            const qaTag = v
+                ? (v.advisory ? ` (QA: advisory)` : ` (QA: ${v.verdict}${v.score != null ? ' ' + v.score.toFixed(2) : ''})`)
+                : '';
+            const note = `[Background agent \`${agent_id}\` (${record.agent_type}) ${record.status}${qaTag}.\nOriginal task: ${record.prompt}\nResult:\n${output}\n]\nThe above is real output from a background agent that ran on the user's behalf. Treat it as ground truth and incorporate it into your next response.`;
             // Persist into the originating session so the user sees it when they switch back
             store[sessionId].messages.push({ role: 'user', content: note, _agentResult: agent_id });
             saveStore(store);
@@ -1068,6 +1087,23 @@
             updateJobCard(agent_id, 'interrupted', null);
         }
 
+        function renderQABadge(agent_id, qa_verdict) {
+            const el = document.getElementById(`qa-${agent_id}`);
+            if (!el) return;
+            if (!qa_verdict) { el.style.display = 'none'; return; }
+            const v = qa_verdict.verdict;
+            const advisory = qa_verdict.advisory;
+            let bg = '#374151', fg = '#aaa', label = 'qa: ?';
+            if (advisory)       { bg = 'rgba(251,191,36,0.18)'; fg = '#fbbf24'; label = `qa: advisory`; }
+            else if (v === 'pass') { bg = 'rgba(74,222,128,0.18)'; fg = '#4ade80'; label = `qa: pass${qa_verdict.score != null ? ' ' + qa_verdict.score.toFixed(2) : ''}`; }
+            else if (v === 'warn') { bg = 'rgba(251,146,60,0.18)'; fg = '#fb923c'; label = `qa: warn${qa_verdict.score != null ? ' ' + qa_verdict.score.toFixed(2) : ''}`; }
+            else if (v === 'fail') { bg = 'rgba(248,113,113,0.18)'; fg = '#f87171'; label = `qa: fail`; }
+            el.style.background = bg; el.style.color = fg;
+            el.textContent = label;
+            el.title = qa_verdict.reason || '';
+            el.style.display = 'inline-block';
+        }
+
         async function refreshJobs() {
             try {
                 const d = await fetch('/api/agents').then(r => r.json());
@@ -1092,6 +1128,8 @@
                             connectAgentSSE(a.agent_id);
                         }
                     }
+                    // Surface the QA verdict on the card if present
+                    renderQABadge(a.agent_id, a.qa_verdict);
                     // Fold result back into chat history when terminal — idempotent
                     if (['completed', 'failed', 'interrupted'].includes(a.status)) {
                         foldAgentResult(a.agent_id);
