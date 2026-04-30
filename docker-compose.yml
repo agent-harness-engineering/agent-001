@@ -16,6 +16,15 @@ services:
     volumes:
       - ./memory:/app/memory
       - ./history:/app/history
+      # Docker socket — :ro is misleading (socket protocol is fully privileged
+      # regardless), so we restrict use in code: tools/docker_probe.py only
+      # calls list/inspect. Required for status/sysadmin agents to see real
+      # container state instead of inventing UNKNOWN cells.
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    # Grant the in-container python process access to the docker group on the
+    # host (gid 979 on PeakAI). Without this, the SDK gets EACCES on the socket.
+    group_add:
+      - "979"
     restart: unless-stopped
     networks:
       - default

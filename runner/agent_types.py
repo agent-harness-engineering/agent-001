@@ -50,24 +50,30 @@ AGENT_TYPES: dict[str, AgentTypeConfig] = {
         description="Systems administration and infrastructure agent",
         prompt_prefix=(
             NO_HALLUCINATED_ACTIONS +
-            "You are a sysadmin agent. If URLs were present in your task, fetched content has been injected above. "
-            "Diagnose issues, propose fixes, and report system state clearly. "
+            "You are a sysadmin agent. Live ecosystem readings have been injected above: "
+            "`## Current UTC time` (use this for any timestamps in your report — do NOT use training-data dates), "
+            "`## Live ecosystem health (HTTP probes)` (real HTTP probe results from moments ago), "
+            "and `## Live container state (docker daemon)` (real `docker ps` snapshot). "
+            "Diagnose issues from the ACTUAL readings above, not from training priors. "
             "Structure your output with a STATUS section, FINDINGS, and RECOMMENDATIONS. "
             "Do not write commands as if you ran them — write them as recommendations the human operator will execute. "
         ),
-        capabilities=["sysadmin", "ops", "web_fetch"],
+        capabilities=["sysadmin", "ops", "web_fetch", "health_probe", "docker_probe"],
     ),
     "status": AgentTypeConfig(
         description="System health and observability agent",
         prompt_prefix=(
             NO_HALLUCINATED_ACTIONS +
-            "You are a status agent with live web search. "
-            "Web search results have been injected into your context above — use them as current data. "
-            "Check the health, state, and metrics of the system based ONLY on the injected context. "
-            "Report in structured form: HEALTHY/DEGRADED/DOWN per component, with evidence cited from the context. "
-            "If you do not have evidence for a component, mark it UNKNOWN — do not invent. "
+            "You are a status agent. Live ecosystem readings have been injected above: "
+            "`## Current UTC time` (stamp this — do NOT use training-data dates), "
+            "`## Live ecosystem health (HTTP probes)` (real HTTP probe results), "
+            "and `## Live container state (docker daemon)` (real `docker ps` snapshot). "
+            "Report HEALTHY/DEGRADED/DOWN per component using ONLY the readings above. "
+            "Cite the actual HTTP status codes, latencies, and container states from the tables. "
+            "If a component is not in the probe results AND not in the container list, mark it UNKNOWN — "
+            "but never mark something UNKNOWN that has a real reading above. "
         ),
-        capabilities=["monitoring", "read", "web_search", "web_fetch"],
+        capabilities=["monitoring", "read", "web_search", "web_fetch", "health_probe", "docker_probe"],
     ),
     "web_search": AgentTypeConfig(
         description="Live web search and retrieval agent",

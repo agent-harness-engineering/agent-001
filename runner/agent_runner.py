@@ -18,7 +18,11 @@ import aiohttp
 
 from .agent_types import AGENT_TYPES, AgentTypeConfig
 from .status_store import AgentStatus, StatusStore
-from tools import fetch_url, search
+from tools import (
+    fetch_url, search,
+    probe_http, format_health_table,
+    list_containers, format_docker_table,
+)
 
 log = logging.getLogger("agent-001.runner")
 
@@ -91,12 +95,21 @@ class AgentRunner:
         return agent_id
 
     async def _gather_context(self, prompt: str, agent_type: str) -> str:
-        """Fetch web context for research/status agents and return an injected block."""
-        if not self._searxng_url:
-            return ""
+        """Fetch web + ecosystem context for the agent and return an injected block.
 
+        Always injects current UTC timestamp (fixes training-data date drift).
+        Status/sysadmin agents additionally get HTTP health probes + docker
+        introspection so their reports rest on real readings, not "UNKNOWN".
+        """
         import re
+        from datetime import datetime, timezone
         lines = []
+
+        # Always inject current UTC — without this, agents stamp 2024-* into
+        # status reports because their training cutoff is the most recent
+        # date they "know."
+        now_utc = datetime.now(timezone.utc).isoformat()
+        lines.append(f"## Current UTC time\n\n{now_utc}")
 
         # Fetch any URLs mentioned in the prompt
         urls = re.findall(r'https?://[^\s"\'<>]+', prompt)
@@ -108,7 +121,11 @@ class AgentRunner:
                 lines.append(f"## Fetch failed: {url} — {result['error']}")
 
         # Search for research/status/web_search agents (only if no URLs already fetched)
-        if agent_type in ("research", "status", "web_search") and not urls:
+        if (
+            self._searxng_url
+            and agent_type in ("research", "status", "web_search")
+            and not urls
+        ):
             query = prompt[:200]
             result = await search(self._http, query, self._searxng_url, limit=5)
             if "results" in result and result["results"]:
@@ -119,9 +136,36 @@ class AgentRunner:
             elif "error" in result:
                 log.warning("Search context gather failed: %s", result["error"])
 
+        # Live ecosystem health — only for status / sysadmin. Real HTTP probes
+        # against declared services + docker introspection (when socket mounted).
+        # This is what closes the "agents don't actually see the ecosystem" gap.
+        if agent_type in ("status", "sysadmin"):
+            try:
+                http_results = await probe_http(self._http)
+                lines.append(
+                    "## Live ecosystem health (HTTP probes)\n\n"
+                    "Real HTTP GET probes run moments before this task. UP = 2xx/3xx response, "
+                    "DOWN = timeout / 5xx / connection error. Cite these numbers directly.\n\n"
+                    + format_health_table(http_results)
+                )
+            except Exception as exc:  # noqa: BLE001
+                log.warning("HTTP probe failed: %s", exc)
+                lines.append(f"## Live ecosystem health (HTTP probes)\n\n_Probe failed: {exc}_")
+
+            try:
+                docker_snap = await list_containers()
+                lines.append(
+                    "## Live container state (docker daemon)\n\n"
+                    "Read directly from the docker socket on PeakAI moments before this task.\n\n"
+                    + format_docker_table(docker_snap)
+                )
+            except Exception as exc:  # noqa: BLE001
+                log.warning("Docker probe failed: %s", exc)
+                lines.append(f"## Live container state\n\n_Probe failed: {exc}_")
+
         if not lines:
             return ""
-        return "\n\n---\n**Web context gathered before this task:**\n\n" + "\n\n".join(lines) + "\n\n---\n\n"
+        return "\n\n---\n**Live context gathered before this task:**\n\n" + "\n\n".join(lines) + "\n\n---\n\n"
 
     async def _run(self, agent: dict, type_cfg: AgentTypeConfig, ep_name: str) -> None:
         agent_id = agent["id"]
