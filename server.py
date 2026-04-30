@@ -285,6 +285,44 @@ async def handle_chat(request: web.Request) -> web.Response:
                 + "\n".join(lines)
             )
 
+        # Recent agent results — injected unconditionally, NOT gated by semantic
+        # similarity. Reason: queries like "Results?" / "It's done" don't semantically
+        # match long agent_result text, so RAG misses; and dist-threshold filtering
+        # drops borderline matches. The model needs to SEE what its own spawned
+        # agents just produced so it can discuss them.
+        try:
+            recent = memory_store.list(where={"source": "agent_result"}, limit=3)
+        except Exception as exc:
+            log.warning("Recent agent_result list failed: %s", exc)
+            recent = []
+        # Drop entries already covered by `relevant` (avoid double-injection)
+        relevant_ids = {h.get("id") for h in relevant}
+        recent = [r for r in recent if r.get("id") not in relevant_ids]
+        if recent:
+            # Tighter trim for compact-context endpoints
+            per_entry_chars = 800 if governance_tier == "compact" else 1500
+            max_entries = 2 if governance_tier == "compact" else 3
+            lines = []
+            for r in recent[:max_entries]:
+                meta = r.get("metadata", {}) or {}
+                ts = (meta.get("timestamp") or "")[:19]
+                atype = meta.get("agent_type", "?")
+                aid = meta.get("agent_id", "")[:32]
+                qa = meta.get("qa_verdict", "")
+                qa_tag = f" qa={qa}" if qa else ""
+                lines.append(
+                    f"### [{ts}] agent={aid} type={atype}{qa_tag}\n"
+                    f"{r.get('text', '')[:per_entry_chars]}"
+                )
+            memory_blocks.append(
+                "## Recent agent results\n\n"
+                "These are the most recent terminal-state results from agents you spawned "
+                "in this session. They are real outputs in your context RIGHT NOW — you "
+                "can read, summarize, and discuss them directly. Do NOT say you cannot "
+                "see agent results until they are 'injected' — they ARE injected, here.\n\n"
+                + "\n\n".join(lines)
+            )
+
     messages = [{"role": "system", "content": sys_prompt}]
     for block in memory_blocks:
         messages.append({"role": "system", "content": block})
