@@ -290,8 +290,16 @@ async def handle_chat(request: web.Request) -> web.Response:
         # match long agent_result text, so RAG misses; and dist-threshold filtering
         # drops borderline matches. The model needs to SEE what its own spawned
         # agents just produced so it can discuss them.
+        # NOTE: pull a larger window then sort by timestamp DESC and trim — the
+        # underlying chromadb `get(where=..., limit=N)` returns the first N in
+        # insertion order (oldest), so a small limit will miss the newest entries.
         try:
-            recent = memory_store.list(where={"source": "agent_result"}, limit=3)
+            recent_pool = memory_store.list(where={"source": "agent_result"}, limit=200)
+            recent = sorted(
+                recent_pool,
+                key=lambda e: (e.get("metadata", {}) or {}).get("timestamp", ""),
+                reverse=True,
+            )
         except Exception as exc:
             log.warning("Recent agent_result list failed: %s", exc)
             recent = []
