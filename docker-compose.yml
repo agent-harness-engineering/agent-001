@@ -2,9 +2,35 @@ services:
   agent-001:
     build: .
     ports:
-      - "8088:8088"
+      - "8095:8095"
     env_file:
       - .env
+    environment:
+      - SEARXNG_URL=http://telogos-searxng:8080
+      # qa-harness joins the telogos-chatbot_default network so this
+      # container resolves it via Docker DNS — avoids host-hairpin routing.
+      - QA_HARNESS_URL=${QA_HARNESS_URL:-http://qa-harness:8096}
+      - QA_HARNESS_ENABLED=${QA_HARNESS_ENABLED:-true}
+      - QA_HARNESS_TIMEOUT=${QA_HARNESS_TIMEOUT:-30}
+      - QA_BLOCK_ON_FAIL=${QA_BLOCK_ON_FAIL:-true}
     volumes:
       - ./memory:/app/memory
+      - ./history:/app/history
+      # Docker socket — :ro is misleading (socket protocol is fully privileged
+      # regardless), so we restrict use in code: tools/docker_probe.py only
+      # calls list/inspect. Required for status/sysadmin agents to see real
+      # container state instead of inventing UNKNOWN cells.
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    # Grant the in-container python process access to the docker group on the
+    # host (gid 979 on PeakAI). Without this, the SDK gets EACCES on the socket.
+    group_add:
+      - "979"
     restart: unless-stopped
+    networks:
+      - default
+      - chatbot
+
+networks:
+  chatbot:
+    external: true
+    name: telogos-chatbot_default

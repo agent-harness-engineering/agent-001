@@ -3,6 +3,9 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
+    <meta http-equiv="Pragma" content="no-cache">
+    <meta http-equiv="Expires" content="0">
     <title>Agent-001</title>
     <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
     <style>
@@ -12,49 +15,181 @@
             background: #0a0f1a;
             color: #e0e0e0;
             height: 100vh;
+            height: 100dvh; /* dynamic viewport — respects mobile browser chrome */
             display: flex;
             flex-direction: column;
+            overflow: hidden;
         }
+
+        /* ── Header ── */
         header {
             background: #0d1525;
-            padding: 10px 16px;
+            padding: 0 16px;
             border-bottom: 1px solid #1e3a5f;
             display: flex;
             align-items: center;
             gap: 10px;
+            flex-shrink: 0;
+            min-height: 48px;
+            position: sticky;
+            top: 0;
+            z-index: 20;
         }
+        .hamburger {
+            background: none;
+            border: none;
+            color: #555;
+            cursor: pointer;
+            padding: 4px 6px;
+            border-radius: 5px;
+            font-size: 18px;
+            line-height: 1;
+            transition: color 0.15s, background 0.15s;
+            flex-shrink: 0;
+        }
+        .hamburger:hover { color: #aaa; background: rgba(255,255,255,0.05); }
         header h1 {
-            font-size: 16px;
+            font-size: 15px;
             font-weight: 600;
             color: #60a5fa;
             cursor: pointer;
             user-select: none;
             transition: color 0.15s;
+            white-space: nowrap;
         }
-        header h1:hover {
-            color: #93c5fd;
+        header h1:hover { color: #93c5fd; }
+        .hdr-dot {
+            width: 9px; height: 9px; border-radius: 50%; background: #888; flex-shrink: 0;
         }
-        header h1:active {
-            color: #3b82f6;
+        .hdr-dot.connected { background: #4ade80; box-shadow: 0 0 6px #4ade80; animation: glow 2s ease-in-out infinite alternate; }
+        .hdr-dot.error { background: #f87171; box-shadow: 0 0 6px #f87171; }
+        @keyframes glow { from { box-shadow: 0 0 4px #4ade80; } to { box-shadow: 0 0 10px #4ade80; } }
+
+        /* ── Tab strip ── */
+        nav.tabs {
+            display: flex;
+            gap: 2px;
+            margin-left: 8px;
         }
-        .status-dot {
-            width: 10px; height: 10px; border-radius: 50%; background: #888;
+        nav.tabs button {
+            background: none;
+            border: none;
+            color: #555;
+            font-size: 13px;
+            font-weight: 500;
+            padding: 6px 14px;
+            border-radius: 6px;
+            cursor: pointer;
+            transition: color 0.15s, background 0.15s;
         }
-        .status-dot.connected {
-            background: #4ade80;
-            box-shadow: 0 0 6px #4ade80;
-            animation: glow 2s ease-in-out infinite alternate;
+        nav.tabs button:hover { color: #aaa; background: rgba(255,255,255,0.05); }
+        nav.tabs button.active { color: #60a5fa; background: rgba(96,165,250,0.1); }
+
+        .model-badge { font-size: 11px; color: #444; margin-left: auto; white-space: nowrap; }
+
+        /* ── Body layout: sidebar + main ── */
+        #layout {
+            display: flex;
+            flex: 1;
+            overflow: hidden;
         }
-        .status-dot.error { background: #f87171; box-shadow: 0 0 6px #f87171; }
-        @keyframes glow {
-            from { box-shadow: 0 0 4px #4ade80; }
-            to { box-shadow: 0 0 10px #4ade80; }
+
+        /* ── Sidebar ── */
+        #sidebar {
+            width: 220px;
+            background: #0b1120;
+            border-right: 1px solid #1a2a45;
+            display: flex;
+            flex-direction: column;
+            flex-shrink: 0;
+            overflow: hidden;
+            transition: width 0.2s ease;
         }
-        .model-badge {
-            font-size: 11px;
-            color: #888;
-            margin-left: auto;
+        #sidebar.closed { width: 0; border-right-color: transparent; }
+
+        .sidebar-top {
+            padding: 10px;
+            border-bottom: 1px solid #1a2a45;
+            flex-shrink: 0;
         }
+        .new-session-btn {
+            width: 100%;
+            background: rgba(96,165,250,0.1);
+            border: 1px solid rgba(96,165,250,0.2);
+            color: #60a5fa;
+            border-radius: 6px;
+            padding: 7px 10px;
+            font-size: 12px;
+            font-weight: 600;
+            cursor: pointer;
+            text-align: left;
+            transition: background 0.15s;
+            white-space: nowrap;
+        }
+        .new-session-btn:hover { background: rgba(96,165,250,0.18); }
+
+        #session-list {
+            flex: 1;
+            overflow-y: auto;
+            padding: 6px;
+            display: flex;
+            flex-direction: column;
+            gap: 2px;
+        }
+        .session-item {
+            padding: 7px 10px;
+            border-radius: 6px;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            transition: background 0.12s;
+            min-width: 0;
+        }
+        .session-item:hover { background: rgba(255,255,255,0.04); }
+        .session-item.active { background: rgba(96,165,250,0.1); }
+        .session-item-body { flex: 1; min-width: 0; }
+        .session-title {
+            font-size: 12px;
+            color: #ccc;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+        .session-item.active .session-title { color: #60a5fa; }
+        .session-date {
+            font-size: 10px;
+            color: #444;
+            margin-top: 1px;
+        }
+        .session-del {
+            background: none;
+            border: none;
+            color: #333;
+            font-size: 14px;
+            cursor: pointer;
+            padding: 0 2px;
+            flex-shrink: 0;
+            line-height: 1;
+            transition: color 0.12s;
+            display: none;
+        }
+        .session-item:hover .session-del { display: block; }
+        .session-del:hover { color: #f87171; }
+
+        /* ── Main content ── */
+        #main {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+        }
+
+        /* ── Views ── */
+        .view { display: none; flex: 1; overflow: hidden; flex-direction: column; }
+        .view.active { display: flex; }
+
+        /* ── Chat view ── */
         #messages {
             flex: 1;
             overflow-y: auto;
@@ -87,8 +222,7 @@
         }
         .copy-btn {
             position: absolute;
-            bottom: 6px;
-            right: 6px;
+            bottom: 6px; right: 6px;
             background: #2a2a4a;
             border: 1px solid #3a3a5a;
             color: #888;
@@ -104,47 +238,20 @@
         .copy-btn.copied { color: #4ade80; }
         .msg.assistant p { margin-bottom: 8px; }
         .msg.assistant p:last-child { margin-bottom: 0; }
-        .msg.assistant pre {
-            background: #0d0d1a;
-            padding: 8px;
-            border-radius: 6px;
-            overflow-x: auto;
-            font-size: 13px;
-            margin: 6px 0;
-        }
-        .msg.assistant code {
-            font-family: 'SF Mono', 'Fira Code', monospace;
-            font-size: 13px;
-        }
-        .msg.error {
-            align-self: center;
-            background: #3b1111;
-            color: #f87171;
-            border: 1px solid #7f1d1d;
-            font-size: 13px;
-        }
-        .typing {
-            align-self: flex-start;
-            color: #666;
-            font-size: 13px;
-            padding: 8px 14px;
-        }
-        .typing::after {
-            content: '...';
-            animation: dots 1.2s steps(4, end) infinite;
-        }
-        @keyframes dots {
-            0%, 20% { content: ''; }
-            40% { content: '.'; }
-            60% { content: '..'; }
-            80%, 100% { content: '...'; }
-        }
+        .msg.assistant pre { background: #0d0d1a; padding: 8px; border-radius: 6px; overflow-x: auto; font-size: 13px; margin: 6px 0; }
+        .msg.assistant code { font-family: 'SF Mono', 'Fira Code', monospace; font-size: 13px; }
+        .msg.error { align-self: center; background: #3b1111; color: #f87171; border: 1px solid #7f1d1d; font-size: 13px; }
+        .typing { align-self: flex-start; color: #555; font-size: 13px; padding: 8px 14px; }
+        .typing::after { content: '...'; animation: dots 1.2s steps(4, end) infinite; }
+        @keyframes dots { 0%,20% { content: ''; } 40% { content: '.'; } 60% { content: '..'; } 80%,100% { content: '...'; } }
+
         #input-bar {
             padding: 12px 16px;
             background: #0d1525;
             border-top: 1px solid #1e3a5f;
             display: flex;
             gap: 8px;
+            flex-shrink: 0;
         }
         #input-bar textarea {
             flex: 1;
@@ -161,7 +268,7 @@
             max-height: 120px;
         }
         #input-bar textarea:focus { border-color: #60a5fa; }
-        #input-bar textarea::placeholder { color: #555; }
+        #input-bar textarea::placeholder { color: #444; }
         #input-bar button {
             background: #2563eb;
             color: white;
@@ -173,151 +280,994 @@
             cursor: pointer;
         }
         #input-bar button:hover { background: #3b82f6; }
-        #input-bar button:disabled { background: #333; color: #666; cursor: not-allowed; }
+        #input-bar button:disabled { background: #222; color: #555; cursor: not-allowed; }
+
+        /* ── Agents view ── */
+        #agents-view {
+            padding: 0;
+            overflow: hidden;
+        }
+        .agents-header {
+            flex-shrink: 0;
+            border-bottom: 1px solid #1a2a45;
+        }
+        #agents-scroll {
+            flex: 1;
+            overflow-y: auto;
+            padding: 16px 20px 24px;
+        }
+        .agents-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 12px 20px;
+        }
+        .agents-header h2 { font-size: 15px; font-weight: 600; color: #60a5fa; }
+        .refresh-btn {
+            background: none;
+            border: 1px solid #1e3a5f;
+            color: #555;
+            border-radius: 6px;
+            padding: 4px 10px;
+            font-size: 12px;
+            cursor: pointer;
+            transition: color 0.15s, border-color 0.15s;
+        }
+        .refresh-btn:hover { color: #aaa; border-color: #60a5fa; }
+
+        .agent-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(290px, 1fr));
+            gap: 12px;
+            margin-bottom: 24px;
+        }
+        .agent-card {
+            background: #0d1525;
+            border: 1px solid #1e3a5f;
+            border-radius: 10px;
+            overflow: hidden;
+            transition: border-color 0.2s;
+            display: flex;
+            flex-direction: column;
+        }
+        .agent-card:hover { border-color: #60a5fa; }
+        .agent-card.connected { border-color: #4ade80; }
+        .agent-card.error     { border-color: #f87171; }
+
+        .card-header {
+            padding: 10px 14px;
+            border-bottom: 1px solid #1a2540;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+        .card-sdot {
+            width: 8px; height: 8px; border-radius: 50%; background: #444; flex-shrink: 0;
+        }
+        .card-sdot.connected { background: #4ade80; animation: sdpulse 1.8s ease-in-out infinite; }
+        .card-sdot.error     { background: #f87171; }
+        @keyframes sdpulse { 0%,100% { opacity: 1; } 50% { opacity: 0.3; } }
+        .card-name {
+            font-family: ui-monospace, monospace;
+            font-size: 13px; font-weight: 600; color: #e0e0e0;
+            flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+        }
+        .card-badge {
+            font-size: 10px; text-transform: uppercase; letter-spacing: 0.05em;
+            padding: 2px 7px; border-radius: 3px; font-weight: 600; flex-shrink: 0;
+        }
+        .card-badge.connected { background: rgba(74,222,128,0.12); color: #4ade80; }
+        .card-badge.error     { background: rgba(248,113,113,0.12); color: #f87171; }
+        .card-body { padding: 10px 14px; flex: 1; display: flex; flex-direction: column; gap: 5px; }
+        .card-model { font-size: 13px; color: #aaa; }
+        .card-url { font-size: 11px; color: #444; font-family: ui-monospace, monospace; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .card-caps { display: flex; gap: 4px; flex-wrap: wrap; margin-top: 2px; }
+        .cap-tag {
+            font-size: 10px;
+            background: rgba(96,165,250,0.08);
+            color: #60a5fa;
+            border: 1px solid rgba(96,165,250,0.15);
+            border-radius: 3px;
+            padding: 1px 6px;
+        }
+
+        .section-title {
+            font-size: 11px; font-weight: 600; color: #444;
+            text-transform: uppercase; letter-spacing: 0.07em; margin-bottom: 8px;
+        }
+        .audit-list { display: flex; flex-direction: column; gap: 3px; }
+        .audit-row {
+            background: #0d1525; border: 1px solid #1a2540;
+            border-radius: 6px; padding: 6px 12px;
+            display: flex; align-items: center; gap: 10px; font-size: 12px;
+        }
+        .audit-type { font-family: ui-monospace, monospace; font-size: 11px; color: #60a5fa; flex-shrink: 0; width: 130px; overflow: hidden; text-overflow: ellipsis; }
+        .audit-tool { color: #ccc; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .audit-dec { flex-shrink: 0; font-size: 11px; font-weight: 600; width: 50px; text-align: right; }
+        .audit-dec.allow { color: #4ade80; }
+        .audit-dec.deny, .audit-dec.block, .audit-dec.blocked { color: #f87171; }
+        .audit-time { color: #333; flex-shrink: 0; font-family: ui-monospace, monospace; font-size: 11px; }
+        .empty-state { color: #444; font-size: 13px; text-align: center; padding: 24px; }
+
+        /* Job cards (spawned agents) */
+        .job-card {
+            background: #0d1525;
+            border: 1px solid #1e3a5f;
+            border-radius: 10px;
+            overflow: hidden;
+            transition: border-color 0.2s;
+        }
+        .job-card.queued      { border-color: #555; }
+        .job-card.running     { border-color: #60a5fa; }
+        .job-card.completed   { border-color: #4ade80; }
+        .job-card.failed      { border-color: #f87171; }
+        .job-card.interrupted { border-color: #fb923c; }
+        .job-header { padding: 10px 14px; border-bottom: 1px solid #1a2540; display: flex; align-items: center; gap: 8px; }
+        .job-sdot { width: 8px; height: 8px; border-radius: 50%; background: #444; flex-shrink: 0; }
+        .job-sdot.queued      { background: #555; }
+        .job-sdot.running     { background: #60a5fa; animation: sdpulse 1.2s ease-in-out infinite; }
+        .job-sdot.completed   { background: #4ade80; }
+        .job-sdot.failed      { background: #f87171; }
+        .job-sdot.interrupted { background: #fb923c; }
+        .job-id   { font-family: ui-monospace, monospace; font-size: 11px; color: #555; flex: 1; overflow: hidden; text-overflow: ellipsis; }
+        .job-type { font-size: 10px; background: rgba(96,165,250,0.1); color: #60a5fa; border: 1px solid rgba(96,165,250,0.2); border-radius: 3px; padding: 1px 6px; flex-shrink: 0; }
+        .job-cancel { background: none; border: none; color: #444; font-size: 13px; cursor: pointer; padding: 0 4px; transition: color 0.15s; }
+        .job-cancel:hover { color: #f87171; }
+        .job-body { padding: 10px 14px; }
+        .job-prompt { font-size: 12px; color: #bbb; margin-bottom: 6px; overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
+        .job-output {
+            font-size: 12px; color: #c9d1e0;
+            background: #070d1a; border: 1px solid #1a2540; border-radius: 6px;
+            padding: 10px 12px; max-height: 260px; overflow-y: auto;
+            word-break: break-word; margin-top: 6px; display: none;
+            line-height: 1.55;
+        }
+        .job-output p { margin: 0 0 6px; }
+        .job-output p:last-child { margin-bottom: 0; }
+        .job-output h1,.job-output h2,.job-output h3 { color:#8bb8f8; margin:8px 0 4px; font-size:13px; }
+        .job-output ul,.job-output ol { margin:4px 0 4px 16px; }
+        .job-output li { margin-bottom:2px; }
+        .job-output code { background:#111e33; padding:1px 5px; border-radius:3px; font-family:ui-monospace,monospace; font-size:11px; color:#7dd3fc; }
+        .job-output pre { background:#111e33; padding:8px; border-radius:5px; overflow-x:auto; }
+        .job-output pre code { background:none; padding:0; color:#93c5fd; }
+        .job-output.visible { display: block; }
+        .job-meta { font-size: 11px; color: #333; font-family: ui-monospace, monospace; margin-top: 4px; }
+        .task-desc { font-size: 12px; color: #bbb; overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
+        .task-meta { font-size: 11px; color: #444; font-family: ui-monospace, monospace; }
+
+        /* ── Mobile layout ────────────────────────────────────────────── */
+        @media (max-width: 640px) {
+            /* Stacked header: title row + model row */
+            header {
+                flex-wrap: wrap;
+                height: auto;
+                padding: 0;
+                gap: 0;
+            }
+            .hamburger { order: 1; padding: 12px 10px; }
+            #hdr-dot   { order: 2; }
+            header h1  { order: 3; flex: 1; font-size: 15px; }
+            nav.tabs   { order: 4; margin-left: 0; }
+            .model-badge {
+                order: 5;
+                width: 100%;
+                margin-left: 0;
+                padding: 5px 14px;
+                font-size: 12px;
+                color: #60a5fa;
+                text-align: center;
+                border-top: 1px solid #1e3a5f;
+                border-bottom: 1px solid #1e3a5f;
+                background: #090e1c;
+            }
+
+            /* Sidebar: slide-over overlay instead of push */
+            #sidebar {
+                position: fixed;
+                top: 0; bottom: 0; left: 0;
+                z-index: 100;
+                width: 260px !important;
+                transform: translateX(-100%);
+                transition: transform 0.22s ease;
+                box-shadow: 4px 0 24px rgba(0,0,0,0.5);
+            }
+            #sidebar.open { transform: translateX(0); }
+            /* Tap-outside scrim */
+            #sidebar-scrim {
+                display: none;
+                position: fixed; inset: 0; z-index: 99;
+                background: rgba(0,0,0,0.45);
+            }
+            #sidebar.open ~ #sidebar-scrim,
+            body.sidebar-open #sidebar-scrim { display: block; }
+
+            /* Layout: main takes full width */
+            #layout { position: relative; }
+            #main { width: 100%; }
+
+            /* Larger touch targets in chat */
+            #messages { padding: 12px 10px; gap: 10px; }
+            .msg { max-width: 92%; padding: 10px 12px; font-size: 14px; }
+            #input-bar { padding: 8px 10px; gap: 8px; }
+            #input { font-size: 16px; } /* prevents iOS auto-zoom */
+            #send { padding: 10px 16px; font-size: 14px; }
+
+            /* Agents: stack spawn controls */
+            .agents-header {
+                flex-direction: column !important;
+                align-items: flex-start !important;
+                gap: 8px !important;
+                padding: 12px 12px 8px;
+            }
+            .agents-header > div {
+                flex-wrap: wrap !important;
+                width: 100%;
+                gap: 6px !important;
+            }
+            #spawn-prompt { width: 100% !important; flex: 1 1 100% !important; }
+            #spawn-type   { flex: 1; }
+
+            /* Agent cards: single column */
+            .agent-grid { grid-template-columns: 1fr !important; }
+
+            /* Job cards: full width */
+            .job-card { font-size: 13px; }
+            .job-output { max-height: 200px; font-size: 12px; }
+
+            /* Audit rows: hide url column on narrow screens */
+            .audit-row { font-size: 11px; gap: 6px; }
+        }
     </style>
 </head>
 <body>
     <header>
-        <div class="status-dot" id="status-dot"></div>
-        <h1 onclick="hardReload()" title="Click to reload (clear cache)">Agent-001</h1>
+        <button class="hamburger" id="hamburger" onclick="toggleSidebar()" title="Toggle sessions">☰</button>
+        <div class="hdr-dot" id="hdr-dot"></div>
+        <h1 onclick="hardReload()" title="Click to reload">Agent-001</h1>
+        <nav class="tabs">
+            <button class="active" onclick="switchTab('chat')" id="tab-chat">Chat</button>
+            <button onclick="switchTab('agents')" id="tab-agents">Agents<span id="tab-agents-badge" style="display:none;margin-left:6px;background:#60a5fa;color:#0a0f1a;border-radius:9px;padding:1px 6px;font-size:10px;font-weight:600;"></span></button>
+        </nav>
         <span class="model-badge" id="model-badge">connecting...</span>
     </header>
-    <div id="messages"></div>
-    <div id="input-bar">
-        <textarea id="input" placeholder="Send a message..." rows="1"></textarea>
-        <button id="send" onclick="sendMessage()">Send</button>
+
+    <div id="layout">
+        <!-- Session sidebar -->
+        <div id="sidebar">
+            <div class="sidebar-top">
+                <button class="new-session-btn" onclick="newSession()">+ New session</button>
+            </div>
+            <div id="session-list"></div>
+        </div>
+        <div id="sidebar-scrim" onclick="toggleSidebar()"></div>
+
+        <!-- Main content -->
+        <div id="main">
+            <!-- Chat view -->
+            <div class="view active" id="chat-view">
+                <div id="messages"></div>
+                <div id="input-bar">
+                    <textarea id="input" placeholder="Send a message… or /spawn [type] prompt to launch an agent" rows="1"></textarea>
+                    <button id="send" onclick="sendMessage()">Send</button>
+                </div>
+            </div>
+
+            <!-- Agents view -->
+            <div class="view" id="agents-view">
+                <div class="agents-header">
+                    <h2>Agents</h2>
+                    <div style="display:flex;gap:6px;align-items:center;">
+                        <select id="spawn-type" style="background:#111827;border:1px solid #1e3a5f;color:#aaa;border-radius:6px;padding:4px 8px;font-size:12px;">
+                            <option value="general">general</option>
+                            <option value="research">research</option>
+                            <option value="sysadmin">sysadmin</option>
+                            <option value="status">status</option>
+                        </select>
+                        <input id="spawn-prompt" type="text" placeholder="Agent prompt…" style="background:#111827;border:1px solid #1e3a5f;color:#e0e0e0;border-radius:6px;padding:5px 10px;font-size:12px;width:220px;outline:none;">
+                        <button class="refresh-btn" onclick="spawnAgent()" style="color:#60a5fa;border-color:#60a5fa;">Spawn</button>
+                        <button class="refresh-btn" onclick="loadAgents()">Refresh</button>
+                    </div>
+                </div>
+                <div id="agents-scroll">
+                    <div class="section-title">Registered Endpoints</div>
+                    <div class="agent-grid" id="agent-grid" style="margin-bottom:20px;">
+                        <div class="empty-state">Loading...</div>
+                    </div>
+
+                    <div class="section-title">Running Agents</div>
+                    <div id="job-list" style="display:flex;flex-direction:column;gap:10px;margin-bottom:20px;">
+                        <div class="empty-state">No agents yet.</div>
+                    </div>
+
+                    <div class="section-title">Recent Audit Events</div>
+                    <div class="audit-list" id="audit-list">
+                        <div class="empty-state">Loading...</div>
+                    </div>
+                </div>
+            </div>
+        </div>
     </div>
 
     <script>
-        const messagesEl = document.getElementById('messages');
-        const inputEl = document.getElementById('input');
-        const sendBtn = document.getElementById('send');
-        const statusDot = document.getElementById('status-dot');
-        const modelBadge = document.getElementById('model-badge');
+        // ── Session store (localStorage) ──────────────────────────────────
+        const STORE_KEY = 'agent001_sessions';
+        const AGENT_SESSIONS_KEY = 'agent001_agent_sessions';   // agent_id → session_id
+        const FOLDED_RESULTS_KEY = 'agent001_folded_results';   // set of agent_ids whose result was folded
 
+        function loadStore() {
+            try { return JSON.parse(localStorage.getItem(STORE_KEY)) || {}; } catch { return {}; }
+        }
+        function saveStore(store) {
+            localStorage.setItem(STORE_KEY, JSON.stringify(store));
+        }
+
+        let store = loadStore();
+        let currentSessionId = null;
         let conversationHistory = [];
 
-        // Auto-resize textarea
+        // agent_id → session_id mapping (persistent so it survives page reload)
+        let _agentSessions = (() => {
+            try { return JSON.parse(localStorage.getItem(AGENT_SESSIONS_KEY)) || {}; } catch { return {}; }
+        })();
+        function _saveAgentSessions() {
+            localStorage.setItem(AGENT_SESSIONS_KEY, JSON.stringify(_agentSessions));
+        }
+
+        // Set of agent_ids whose result has already been folded into chat context
+        let _foldedResults = new Set((() => {
+            try { return JSON.parse(localStorage.getItem(FOLDED_RESULTS_KEY)) || []; } catch { return []; }
+        })());
+        function _saveFoldedResults() {
+            // Cap at 200 most recent so localStorage doesn't grow unbounded
+            const arr = Array.from(_foldedResults).slice(-200);
+            _foldedResults = new Set(arr);
+            localStorage.setItem(FOLDED_RESULTS_KEY, JSON.stringify(arr));
+        }
+
+        function genId() {
+            return 'sess_' + Date.now() + '_' + Math.random().toString(36).slice(2, 6);
+        }
+
+        function newSession() {
+            const id = genId();
+            store[id] = {
+                id,
+                title: 'New session',
+                created: new Date().toISOString(),
+                messages: [],
+            };
+            saveStore(store);
+            switchSession(id);
+            renderSessionList();
+            switchTab('chat');
+        }
+
+        function switchSession(id) {
+            if (!(id in store)) return;
+            currentSessionId = id;
+            conversationHistory = store[id].messages.map(m => ({ role: m.role, content: m.content }));
+            renderMessages();
+            renderSessionList();
+        }
+
+        function deleteSession(id, e) {
+            e.stopPropagation();
+            delete store[id];
+            saveStore(store);
+            if (currentSessionId === id) {
+                const ids = Object.keys(store);
+                if (ids.length) switchSession(ids[ids.length - 1]);
+                else newSession();
+            }
+            renderSessionList();
+        }
+
+        function updateSessionTitle(id, firstMsg) {
+            if (store[id]) {
+                store[id].title = firstMsg.slice(0, 40) + (firstMsg.length > 40 ? '…' : '');
+                saveStore(store);
+                renderSessionList();
+            }
+        }
+
+        function renderSessionList() {
+            const el = document.getElementById('session-list');
+            const ids = Object.keys(store).sort((a, b) =>
+                (store[b].created || '').localeCompare(store[a].created || ''));
+            if (!ids.length) {
+                el.innerHTML = '<div class="empty-state" style="font-size:11px;padding:16px;">No sessions</div>';
+                return;
+            }
+            el.innerHTML = ids.map(id => {
+                const s = store[id];
+                const date = s.created ? s.created.slice(0, 10) : '';
+                const active = id === currentSessionId ? ' active' : '';
+                return `<div class="session-item${active}" onclick="switchSession('${id}')">
+                    <div class="session-item-body">
+                        <div class="session-title">${esc(s.title)}</div>
+                        <div class="session-date">${date}</div>
+                    </div>
+                    <button class="session-del" onclick="deleteSession('${id}', event)" title="Delete">✕</button>
+                </div>`;
+            }).join('');
+        }
+
+        function renderMessages() {
+            const el = document.getElementById('messages');
+            el.innerHTML = '';
+            const sess = store[currentSessionId];
+            if (!sess) return;
+            sess.messages.forEach(m => _appendMessage(m.role, m.content, false));
+            el.scrollTop = el.scrollHeight;
+        }
+
+        // ── Sidebar toggle ────────────────────────────────────────────────
+        let sidebarOpen = window.innerWidth > 640;
+        function toggleSidebar() {
+            sidebarOpen = !sidebarOpen;
+            const sb = document.getElementById('sidebar');
+            if (window.innerWidth <= 640) {
+                sb.classList.toggle('open', sidebarOpen);
+                document.body.classList.toggle('sidebar-open', sidebarOpen);
+            } else {
+                sb.classList.toggle('closed', !sidebarOpen);
+            }
+        }
+
+        // ── Tab switching ─────────────────────────────────────────────────
+        let currentTab = 'chat';
+        function switchTab(tab) {
+            currentTab = tab;
+            document.querySelectorAll('.view').forEach(v => v.classList.remove('active'));
+            document.querySelectorAll('nav.tabs button').forEach(b => b.classList.remove('active'));
+            document.getElementById(tab + '-view').classList.add('active');
+            document.getElementById('tab-' + tab).classList.add('active');
+            if (tab === 'agents') loadAgents();
+            if (tab === 'chat') inputEl.focus();
+        }
+
+        // ── Chat ──────────────────────────────────────────────────────────
+        const messagesEl = document.getElementById('messages');
+        const inputEl    = document.getElementById('input');
+        const sendBtn    = document.getElementById('send');
+        const hdrDot     = document.getElementById('hdr-dot');
+        const modelBadge = document.getElementById('model-badge');
+
         inputEl.addEventListener('input', () => {
             inputEl.style.height = 'auto';
             inputEl.style.height = Math.min(inputEl.scrollHeight, 120) + 'px';
         });
-
-        inputEl.addEventListener('keydown', (e) => {
-            if (e.key === 'Enter' && !e.shiftKey) {
-                e.preventDefault();
-                sendMessage();
-            }
+        inputEl.addEventListener('keydown', e => {
+            if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendMessage(); }
         });
 
-        function addMessage(role, content) {
+        function _appendMessage(role, content, scroll = true) {
             const div = document.createElement('div');
             div.className = `msg ${role}`;
             if (role === 'assistant') {
                 div.innerHTML = marked.parse(content);
-                div.dataset.raw = content;
-                const copyBtn = document.createElement('button');
-                copyBtn.className = 'copy-btn';
-                copyBtn.textContent = 'Copy';
-                copyBtn.onclick = () => {
-                    navigator.clipboard.writeText(content).then(() => {
-                        copyBtn.textContent = 'Copied';
-                        copyBtn.classList.add('copied');
-                        setTimeout(() => {
-                            copyBtn.textContent = 'Copy';
-                            copyBtn.classList.remove('copied');
-                        }, 1500);
-                    });
-                };
-                div.appendChild(copyBtn);
+                const btn = document.createElement('button');
+                btn.className = 'copy-btn';
+                btn.textContent = 'Copy';
+                btn.onclick = () => navigator.clipboard.writeText(content).then(() => {
+                    btn.textContent = 'Copied'; btn.classList.add('copied');
+                    setTimeout(() => { btn.textContent = 'Copy'; btn.classList.remove('copied'); }, 1500);
+                });
+                div.appendChild(btn);
+            } else if (role === 'error') {
+                div.textContent = content;
             } else {
                 div.textContent = content;
             }
             messagesEl.appendChild(div);
-            messagesEl.scrollTop = messagesEl.scrollHeight;
+            if (scroll) messagesEl.scrollTop = messagesEl.scrollHeight;
             return div;
         }
 
         function showTyping() {
             const div = document.createElement('div');
-            div.className = 'typing';
-            div.id = 'typing-indicator';
-            div.textContent = 'Thinking';
+            div.className = 'typing'; div.id = 'typing-indicator'; div.textContent = 'Thinking';
             messagesEl.appendChild(div);
             messagesEl.scrollTop = messagesEl.scrollHeight;
         }
+        function hideTyping() { document.getElementById('typing-indicator')?.remove(); }
 
-        function hideTyping() {
-            const el = document.getElementById('typing-indicator');
-            if (el) el.remove();
+        // ── Spawn intent detection & execution ───────────────────────────
+        function shouldIntercept(text) {
+            if (text.startsWith('/spawn')) return true;
+            const lower = text.toLowerCase();
+            // Explicit web search / fetch requests — always intercept, no "agent" word needed
+            if (/\bsearch\s+(?:the\s+)?web\b|\bweb\s+search\b|\blook\s+(?:it\s+)?up\b|\bfetch\s+https?:/.test(lower)) return true;
+            // Agent/job spawn patterns
+            const hasAgent = lower.includes('agent') || lower.includes('job');
+            return hasAgent && (
+                lower.includes('spawn') ||
+                lower.includes('launch') ||
+                lower.includes('start') ||
+                lower.includes('create') ||
+                lower.includes('run a') ||
+                lower.includes('kick off') ||
+                lower.includes('search') ||
+                lower.includes('research') ||
+                lower.includes('look up') ||
+                lower.includes('find me')
+            );
+        }
+
+        async function handleSpawn(text) {
+            const TYPES = ['general', 'research', 'sysadmin', 'status', 'web_search'];
+            let type = 'general', prompt = text;
+
+            if (text.startsWith('/spawn')) {
+                const args = text.slice(6).trim().split(/\s+/);
+                if (TYPES.includes(args[0])) { type = args.shift(); }
+                prompt = args.join(' ');
+            } else {
+                const lower = text.toLowerCase();
+                // Type detection — web_search first (most specific)
+                if (/\bweb\s+search\b|\bsearch\s+(?:the\s+)?web\b|\blook\s+(?:it\s+)?up\b/.test(lower)) type = 'web_search';
+                else if (/\bsearch\b|\bfind\b|\blook\s+up\b|\bresearch\b|\banalyz\b|\binvestigat\b/.test(lower)) type = 'research';
+                else if (/\bstatus\b|\bhealth\b|\bmonitor\b/.test(lower)) type = 'status';
+                else if (/\bsysadmin\b|\binfra\b|\bops\b/.test(lower)) type = 'sysadmin';
+                // Prompt extraction — strip the spawn-intent preamble, keep the actual task
+                const stripRe = /^(?:(?:spawn|launch|start|create|run|kick\s+off)\s+(?:a\s+)?(?:web\s+search|research|status|sysadmin|general)?\s*agent\s+(?:to|that|which|for|:)?\s*|(?:search\s+(?:the\s+)?web|web\s+search)\s+(?:for\s+)?)/i;
+                const stripped = text.replace(stripRe, '').trim();
+                if (stripped && stripped.length > 3) prompt = stripped;
+                // Fallback: extract after "agent for/to/that"
+                if (prompt === text) {
+                    const m = text.match(/\bagent\s+(?:to|that|which|for|:)?\s*/i);
+                    if (m) prompt = text.slice(m.index + m[0].length).trim() || text;
+                }
+            }
+
+            if (!prompt) {
+                injectSystemMessage({ level: 'error', message: 'Spawn needs a prompt. Try: `/spawn status check disk usage`' });
+                return;
+            }
+
+            try {
+                const resp = await fetch('/api/agents/spawn', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ prompt, agent_type: type }),
+                });
+                const data = await resp.json();
+                if (data.agent_id) {
+                    injectSystemMessage({ level: 'success', message: `Agent \`${data.agent_id}\` spawned (${type}) — watch Agents tab` });
+                    addJobCard(data.agent_id, type, prompt, 'queued');
+                    connectAgentSSE(data.agent_id);
+                    // Bind agent to current session and seed chat history so the model
+                    // is aware that an agent is doing work on its behalf
+                    _agentSessions[data.agent_id] = currentSessionId;
+                    _saveAgentSessions();
+                    const ack = `[Spawning ${type} agent \`${data.agent_id}\`. Task: ${prompt}. Result will be folded into this conversation when the agent completes.]`;
+                    conversationHistory.push({ role: 'user', content: text });
+                    conversationHistory.push({ role: 'assistant', content: ack });
+                    if (currentSessionId && store[currentSessionId]) {
+                        store[currentSessionId].messages.push({ role: 'assistant', content: ack });
+                        saveStore(store);
+                    }
+                } else {
+                    injectSystemMessage({ level: 'error', message: `Spawn failed: ${data.error || 'check Agents tab — no endpoint?'}` });
+                }
+            } catch (e) {
+                injectSystemMessage({ level: 'error', message: `Spawn error: ${e.message}` });
+            }
         }
 
         async function sendMessage() {
             const text = inputEl.value.trim();
-            if (!text) return;
+            if (!text || !currentSessionId) return;
 
-            inputEl.value = '';
-            inputEl.style.height = 'auto';
-            sendBtn.disabled = true;
+            inputEl.value = ''; inputEl.style.height = 'auto'; sendBtn.disabled = true;
 
-            addMessage('user', text);
+            // First message in session → update title
+            if (store[currentSessionId].messages.length === 0) {
+                updateSessionTitle(currentSessionId, text);
+            }
+
+            store[currentSessionId].messages.push({ role: 'user', content: text });
+            saveStore(store);
+
+            // ── Intercept spawn commands before hitting the model ─────────
+            if (shouldIntercept(text)) {
+                _appendMessage('user', text);
+                await handleSpawn(text);
+                sendBtn.disabled = false; inputEl.focus();
+                return;
+            }
+
             conversationHistory.push({ role: 'user', content: text });
+            _appendMessage('user', text);
             showTyping();
 
             try {
                 const resp = await fetch('/chat', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({
-                        message: text,
-                        history: conversationHistory.slice(-20)
-                    }),
+                    body: JSON.stringify({ message: text, history: conversationHistory.slice(-20) }),
                 });
                 hideTyping();
-
                 if (!resp.ok) {
                     const err = await resp.json().catch(() => ({ error: resp.statusText }));
-                    addMessage('error', err.error || 'Request failed');
+                    _appendMessage('error', err.error || 'Request failed');
                 } else {
                     const data = await resp.json();
                     const reply = data.response || '(empty response)';
-                    addMessage('assistant', reply);
+                    store[currentSessionId].messages.push({ role: 'assistant', content: reply });
+                    saveStore(store);
                     conversationHistory.push({ role: 'assistant', content: reply });
+                    _appendMessage('assistant', reply);
                 }
             } catch (e) {
                 hideTyping();
-                addMessage('error', 'Connection error: ' + e.message);
+                _appendMessage('error', 'Connection error: ' + e.message);
             }
 
             sendBtn.disabled = false;
             inputEl.focus();
         }
 
+        // ── Status poll ───────────────────────────────────────────────────
         async function checkStatus() {
             try {
-                const resp = await fetch('/status');
-                const data = await resp.json();
-                statusDot.className = 'status-dot connected';
-                const endpoints = Object.keys(data.endpoints || {});
-                if (endpoints.length > 0) {
-                    const ep = data.endpoints[endpoints[0]];
-                    modelBadge.textContent = ep.model || endpoints[0];
+                const data = await fetch('/status').then(r => r.json());
+                const eps = Object.keys(data.endpoints || {});
+                if (eps.length > 0) {
+                    hdrDot.className = 'hdr-dot connected';
+                    modelBadge.textContent = data.endpoints[eps[0]].model || eps[0];
                 } else {
+                    hdrDot.className = 'hdr-dot error';
                     modelBadge.textContent = 'no model registered';
-                    statusDot.className = 'status-dot error';
                 }
             } catch {
-                statusDot.className = 'status-dot error';
+                hdrDot.className = 'hdr-dot error';
                 modelBadge.textContent = 'offline';
             }
         }
 
-        function hardReload() {
-            if ('caches' in window) {
-                caches.keys().then(names => names.forEach(n => caches.delete(n)));
+        // ── Agents tab ────────────────────────────────────────────────────
+        // Track active SSE connections keyed by agent_id
+        const _sseConns = {};
+
+        async function spawnAgent() {
+            const prompt = document.getElementById('spawn-prompt').value.trim();
+            const agent_type = document.getElementById('spawn-type').value;
+            if (!prompt) return;
+            document.getElementById('spawn-prompt').value = '';
+            try {
+                const resp = await fetch('/api/agents/spawn', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ prompt, agent_type }),
+                });
+                const data = await resp.json();
+                if (data.agent_id) {
+                    addJobCard(data.agent_id, agent_type, prompt, 'queued');
+                    connectAgentSSE(data.agent_id);
+                    if (currentSessionId) {
+                        _agentSessions[data.agent_id] = currentSessionId;
+                        _saveAgentSessions();
+                    }
+                } else {
+                    alert(data.error || 'Spawn failed');
+                }
+            } catch (e) {
+                alert('Spawn error: ' + e.message);
             }
+        }
+
+        document.addEventListener('keydown', e => {
+            if (e.key === 'Enter' && document.activeElement === document.getElementById('spawn-prompt')) {
+                spawnAgent();
+            }
+        });
+
+        function addJobCard(agent_id, agent_type, prompt, status) {
+            const list = document.getElementById('job-list');
+            // Remove empty state
+            list.querySelectorAll('.empty-state').forEach(el => el.remove());
+
+            const card = document.createElement('div');
+            card.className = `job-card ${status}`;
+            card.id = `job-${agent_id}`;
+            card.innerHTML = `
+                <div class="job-header">
+                    <span class="job-sdot ${status}"></span>
+                    <span class="job-id">${esc(agent_id)}</span>
+                    <span class="job-type">${esc(agent_type)}</span>
+                    <span class="job-qa" id="qa-${agent_id}" style="display:none;font-size:10px;padding:1px 6px;border-radius:9px;margin-left:4px;"></span>
+                    <button class="job-cancel" onclick="cancelAgent('${agent_id}')" title="Cancel">✕</button>
+                </div>
+                <div class="job-body">
+                    <div class="job-prompt">${esc(prompt)}</div>
+                    <div class="job-output" id="out-${agent_id}"></div>
+                    <div class="job-meta" id="meta-${agent_id}">spawned</div>
+                </div>`;
+            list.prepend(card);
+        }
+
+        function updateJobCard(agent_id, status, text) {
+            const card = document.getElementById(`job-${agent_id}`);
+            if (!card) return;
+            card.className = `job-card ${status}`;
+            card.querySelector('.job-sdot').className = `job-sdot ${status}`;
+            if (text) {
+                const out = document.getElementById(`out-${agent_id}`);
+                out.innerHTML = marked.parse(text);
+                out.classList.add('visible');
+            }
+        }
+
+        function setJobMeta(agent_id, text) {
+            const el = document.getElementById(`meta-${agent_id}`);
+            if (el) el.textContent = text;
+        }
+
+        // Fold a completed agent's result back into the chat session that spawned it.
+        // Idempotent — uses _foldedResults to dedupe across SSE done + polling.
+        // QA-gated: results with verdict=fail (non-advisory) are blocked from fold.
+        async function foldAgentResult(agent_id) {
+            if (_foldedResults.has(agent_id)) return;
+            const sessionId = _agentSessions[agent_id];
+            if (!sessionId || !store[sessionId]) return;   // not bound to any session, or session deleted
+            // Fetch the canonical record from disk (more reliable than reconstructing from SSE state)
+            let record = null;
+            try {
+                const d = await fetch('/api/agents').then(r => r.json());
+                record = (d.agents || []).find(a => a.agent_id === agent_id);
+            } catch { return; }
+            if (!record) return;
+            if (!['completed', 'failed', 'interrupted'].includes(record.status)) return;
+            // QA gate — block fold if reviewer rejected the output (advisory verdicts pass through)
+            const v = record.qa_verdict || null;
+            if (v && !v.advisory && v.verdict === 'fail') {
+                _foldedResults.add(agent_id);
+                _saveFoldedResults();
+                if (sessionId === currentSessionId) {
+                    const marker = document.createElement('div');
+                    marker.style.cssText = 'align-self:center;font-size:11px;color:#f87171;font-style:italic;padding:4px 8px;border-top:1px dashed #7f1d1d;border-bottom:1px dashed #7f1d1d;margin:4px 0;max-width:90%;';
+                    marker.textContent = `↳ ${agent_id} blocked from chat by QA: ${(v.reason || '').slice(0, 200)}`;
+                    messagesEl.appendChild(marker);
+                    messagesEl.scrollTop = messagesEl.scrollHeight;
+                }
+                return;
+            }
+            const output = (record.output || record.error || '(no output)').toString();
+            const qaTag = v
+                ? (v.advisory ? ` (QA: advisory)` : ` (QA: ${v.verdict}${v.score != null ? ' ' + v.score.toFixed(2) : ''})`)
+                : '';
+            const note = `[Background agent \`${agent_id}\` (${record.agent_type}) ${record.status}${qaTag}.\nOriginal task: ${record.prompt}\nResult:\n${output}\n]\nThe above is real output from a background agent that ran on the user's behalf. Treat it as ground truth and incorporate it into your next response.`;
+            // Persist into the originating session so the user sees it when they switch back
+            store[sessionId].messages.push({ role: 'user', content: note, _agentResult: agent_id });
+            saveStore(store);
+            // If user is currently in that session, also push into live conversationHistory
+            // so the very next /chat turn includes the result
+            if (sessionId === currentSessionId) {
+                conversationHistory.push({ role: 'user', content: note });
+                const marker = document.createElement('div');
+                marker.style.cssText = 'align-self:center;font-size:11px;color:#666;font-style:italic;padding:4px 8px;border-top:1px dashed #1e3a5f;border-bottom:1px dashed #1e3a5f;margin:4px 0;max-width:90%;';
+                marker.textContent = `↳ Result of ${agent_id} folded into chat context (${output.length} chars)`;
+                messagesEl.appendChild(marker);
+                messagesEl.scrollTop = messagesEl.scrollHeight;
+            }
+            _foldedResults.add(agent_id);
+            _saveFoldedResults();
+        }
+
+        function connectAgentSSE(agent_id) {
+            if (_sseConns[agent_id]) return;
+            const es = new EventSource(`/api/agents/${agent_id}/stream`);
+            _sseConns[agent_id] = es;
+            es.onmessage = (e) => {
+                const data = JSON.parse(e.data);
+                const et = data.event_type;
+                const ts = (data.timestamp || '').slice(11, 19);
+                if (et === 'status') {
+                    updateJobCard(agent_id, data.status, null);
+                    setJobMeta(agent_id, `${data.status} · ${ts}`);
+                } else if (et === 'output') {
+                    updateJobCard(agent_id, 'running', data.text);
+                } else if (et === 'error') {
+                    updateJobCard(agent_id, 'failed', data.message);
+                    setJobMeta(agent_id, `failed · ${ts}`);
+                } else if (et === 'done') {
+                    updateJobCard(agent_id, data.status, null);
+                    setJobMeta(agent_id, `${data.status} · ${ts}`);
+                    es.close();
+                    delete _sseConns[agent_id];
+                    foldAgentResult(agent_id);
+                }
+            };
+            es.onerror = () => { es.close(); delete _sseConns[agent_id]; };
+        }
+
+        async function cancelAgent(agent_id) {
+            await fetch(`/api/agents/${agent_id}/cancel`, { method: 'POST' });
+            updateJobCard(agent_id, 'interrupted', null);
+        }
+
+        function renderQABadge(agent_id, qa_verdict) {
+            const el = document.getElementById(`qa-${agent_id}`);
+            if (!el) return;
+            if (!qa_verdict) { el.style.display = 'none'; return; }
+            const v = qa_verdict.verdict;
+            const advisory = qa_verdict.advisory;
+            let bg = '#374151', fg = '#aaa', label = 'qa: ?';
+            if (advisory)       { bg = 'rgba(251,191,36,0.18)'; fg = '#fbbf24'; label = `qa: advisory`; }
+            else if (v === 'pass') { bg = 'rgba(74,222,128,0.18)'; fg = '#4ade80'; label = `qa: pass${qa_verdict.score != null ? ' ' + qa_verdict.score.toFixed(2) : ''}`; }
+            else if (v === 'warn') { bg = 'rgba(251,146,60,0.18)'; fg = '#fb923c'; label = `qa: warn${qa_verdict.score != null ? ' ' + qa_verdict.score.toFixed(2) : ''}`; }
+            else if (v === 'fail') { bg = 'rgba(248,113,113,0.18)'; fg = '#f87171'; label = `qa: fail`; }
+            el.style.background = bg; el.style.color = fg;
+            el.textContent = label;
+            el.title = qa_verdict.reason || '';
+            el.style.display = 'inline-block';
+        }
+
+        async function refreshJobs() {
+            try {
+                const d = await fetch('/api/agents').then(r => r.json());
+                const jobs = d.agents || [];
+                const list = document.getElementById('job-list');
+                jobs.forEach(a => {
+                    const card = document.getElementById(`job-${a.agent_id}`);
+                    if (!card) {
+                        addJobCard(a.agent_id, a.agent_type, a.prompt, a.status);
+                        if (a.output) updateJobCard(a.agent_id, a.status, a.output);
+                        setJobMeta(a.agent_id, `${a.status}${a.completed_at ? ' · ' + a.completed_at.slice(11,19) : ''}`);
+                        if (a.status === 'running' || a.status === 'queued') {
+                            connectAgentSSE(a.agent_id);
+                        }
+                    } else if (!_sseConns[a.agent_id]) {
+                        // Card exists but no SSE — reconcile status from disk
+                        if (card.className !== `job-card ${a.status}`) {
+                            updateJobCard(a.agent_id, a.status, a.output || null);
+                            setJobMeta(a.agent_id, `${a.status}${a.completed_at ? ' · ' + a.completed_at.slice(11,19) : ''}`);
+                        }
+                        if (a.status === 'running' || a.status === 'queued') {
+                            connectAgentSSE(a.agent_id);
+                        }
+                    }
+                    // Surface the QA verdict on the card if present
+                    renderQABadge(a.agent_id, a.qa_verdict);
+                    // Fold result back into chat history when terminal — idempotent
+                    if (['completed', 'failed', 'interrupted'].includes(a.status)) {
+                        foldAgentResult(a.agent_id);
+                    }
+                });
+                if (jobs.length === 0 && !list.querySelector('.job-card')) {
+                    list.innerHTML = '<div class="empty-state">No agents yet. Use Spawn to create one.</div>';
+                }
+                // Update Agents tab badge with running count
+                const running = jobs.filter(a => a.status === 'running' || a.status === 'queued').length;
+                const badge = document.getElementById('tab-agents-badge');
+                if (running > 0) {
+                    badge.textContent = running;
+                    badge.style.display = 'inline-block';
+                } else {
+                    badge.style.display = 'none';
+                }
+            } catch {}
+        }
+
+        async function loadAgents() {
+            const grid      = document.getElementById('agent-grid');
+            const auditList = document.getElementById('audit-list');
+
+            // Endpoints
+            let status = {};
+            try { status = await fetch('/status').then(r => r.json()); } catch {}
+            const endpoints = status.endpoints || {};
+            const names = Object.keys(endpoints);
+            grid.innerHTML = names.length === 0
+                ? '<div class="empty-state">No endpoints registered.<br>POST /endpoints to add one.</div>'
+                : names.map(name => {
+                    const ep = endpoints[name];
+                    const caps = (ep.capabilities || []).map(c => `<span class="cap-tag">${esc(c)}</span>`).join('');
+                    return `<div class="agent-card connected">
+                        <div class="card-header">
+                            <span class="card-sdot connected"></span>
+                            <span class="card-name">${esc(name)}</span>
+                            <span class="card-badge connected">online</span>
+                        </div>
+                        <div class="card-body">
+                            <div class="card-model">${esc(ep.model || name)}</div>
+                            <div class="card-url">${esc(ep.url || '')}</div>
+                            ${caps ? `<div class="card-caps">${caps}</div>` : ''}
+                        </div>
+                    </div>`;
+                }).join('');
+
+            await refreshJobs();
+
+            // Audit events
+            let events = [];
+            try { events = (await fetch('/v1/audit?limit=20').then(r => r.json())).events || []; } catch {}
+            auditList.innerHTML = events.length === 0
+                ? '<div class="empty-state">No audit events yet.</div>'
+                : events.slice().reverse().map(e => {
+                    const dec = e.decision || e.outcome || '';
+                    const decClass = dec === 'allow' ? 'allow' : 'deny';
+                    return `<div class="audit-row">
+                        <span class="audit-type">${esc(e.event_type || '')}</span>
+                        <span class="audit-tool">${esc(e.tool_name || '—')}</span>
+                        <span class="audit-dec ${decClass}">${esc(dec)}</span>
+                        <span class="audit-time">${(e.timestamp || '').slice(11, 19)}</span>
+                    </div>`;
+                }).join('');
+        }
+
+        function esc(s) {
+            return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+        }
+
+        function hardReload() {
+            if ('caches' in window) caches.keys().then(ns => ns.forEach(n => caches.delete(n)));
             location.reload(true);
         }
+
+        // ── Boot ──────────────────────────────────────────────────────────
+        renderSessionList();
+        const existingIds = Object.keys(store);
+        if (existingIds.length) {
+            switchSession(existingIds[existingIds.length - 1]);
+        } else {
+            newSession();
+        }
+        // ── Agent completion notifications ────────────────────────────────
+        const _seenNoteIds = new Set();
+
+        function injectSystemMessage(note) {
+            // Deduplicate: SSE and poll can both deliver the same notification
+            const id = note.id;
+            if (id && _seenNoteIds.has(id)) return;
+            if (id) _seenNoteIds.add(id);
+
+            const level = note.level || 'info';
+            const color = level === 'success' ? '#4ade80' : level === 'error' ? '#f87171' : '#60a5fa';
+            const div = document.createElement('div');
+            div.style.cssText = `align-self:center;background:#0d1525;border:1px solid ${color}33;border-left:3px solid ${color};border-radius:8px;padding:8px 14px;font-size:12px;color:${color};max-width:90%;margin:4px 0;`;
+            div.innerHTML = marked.parse(note.message || '');
+            messagesEl.appendChild(div);
+            messagesEl.scrollTop = messagesEl.scrollHeight;
+        }
+
+        function connectNotificationStream() {
+            try {
+                const es = new EventSource('/api/notifications/stream');
+                es.addEventListener('open', () => {
+                    console.log('[agent-001] notification stream connected');
+                });
+                es.onmessage = (e) => {
+                    try { injectSystemMessage(JSON.parse(e.data)); } catch {}
+                };
+                es.onerror = (err) => {
+                    console.warn('[agent-001] notification stream error, retrying in 5s', err);
+                    es.close();
+                    setTimeout(connectNotificationStream, 5000);
+                };
+            } catch (e) {
+                console.error('[agent-001] EventSource init failed:', e);
+                setTimeout(connectNotificationStream, 10000);
+            }
+        }
+        connectNotificationStream();
+
+        // Polling fallback — catches any notifications SSE missed
+        let _notifSince = (Date.now() / 1000) - 5;
+        async function pollNotifications() {
+            try {
+                const d = await fetch(`/api/notifications?since=${_notifSince}`).then(r => r.json());
+                const ns = d.notifications || [];
+                _notifSince = Date.now() / 1000;
+                ns.forEach(n => injectSystemMessage(n));
+            } catch {}
+        }
+        setInterval(pollNotifications, 10000);
+
+        // Poll for agents spawned outside the UI (chat intercept, API, etc.) every 5s
+        refreshJobs();
+        setInterval(refreshJobs, 5000);
 
         checkStatus();
         setInterval(checkStatus, 30000);

@@ -2,17 +2,33 @@
 
 4M governed. Loads governance modules at startup and injects them
 as system context for inference dispatch.
+
+P0 safety layer: ToolProxy → PermissionGate → AuditStore → GovernanceGuard
+wired via /v1/process, /v1/audit, and /v1/health endpoints.
 """
 
+import asyncio
 import json
 import logging
 import os
+import re
 import ssl
+import uuid
+from dataclasses import asdict
 from datetime import datetime, timezone
 from pathlib import Path
 
 import aiohttp
 from aiohttp import web
+
+from audit import AuditStore, AuditEvent
+from gates import PermissionGate, PermissionPolicy, PermissionDecision
+from governance import GovernanceGuard
+from proxy import ToolProxy, CanonicalToolCall, ValidationError
+from runner import AgentRunner, AGENT_TYPES, StatusStore
+from runner.memory_store import MemoryStore
+from runner.qa_gate import QAGate, should_block
+from tools import fetch_url, search, SSRFError
 
 logging.basicConfig(
     level=logging.INFO,
@@ -20,14 +36,52 @@ logging.basicConfig(
 )
 log = logging.getLogger("agent-001")
 
+# ---------------------------------------------------------------------------
+# In-process notification bus (ThinxS pattern)
+# ---------------------------------------------------------------------------
+_notifications: list[dict] = []          # last 50, newest at end
+_notification_queues: set[asyncio.Queue] = set()
+
+
+def push_notification(note: dict) -> None:
+    """Broadcast a notification to all connected chat SSE clients."""
+    _notifications.append(note)
+    if len(_notifications) > 50:
+        _notifications.pop(0)
+    for q in list(_notification_queues):
+        try:
+            q.put_nowait(note)
+        except asyncio.QueueFull:
+            pass
+    log.info("Notification [%s] agent=%s: %s",
+             note.get("level", "info"), note.get("agent_id", ""), note.get("message", "")[:80])
+
 BASE_DIR = Path(__file__).parent
 HOST = os.getenv("AGENT001_HOST", "0.0.0.0")
-PORT = int(os.getenv("AGENT001_PORT", "8088"))
+PORT = int(os.getenv("AGENT001_PORT", "8095"))
+SEARXNG_URL = os.getenv("SEARXNG_URL", "http://telogos-searxng:8080")
+
 MEMORY_DIR = BASE_DIR / "memory"
 ENDPOINTS_FILE = MEMORY_DIR / "endpoints.json"
+HISTORY_DIR = BASE_DIR / "history"
+AGENTS_DIR = BASE_DIR / "memory" / "agents"
+CHROMA_DIR = BASE_DIR / "memory" / "chroma_db"
+RECALL_K_FULL = int(os.getenv("MEMORY_RECALL_K_FULL", "8"))
+RECALL_K_COMPACT = int(os.getenv("MEMORY_RECALL_K_COMPACT", "3"))
+MEMORY_DIST_THRESHOLD = float(os.getenv("MEMORY_DIST_THRESHOLD", "0.6"))
+QA_HARNESS_URL = os.getenv("QA_HARNESS_URL", "http://100.100.214.61:8096")
+QA_HARNESS_ENABLED = os.getenv("QA_HARNESS_ENABLED", "true").lower() == "true"
+QA_HARNESS_TIMEOUT = float(os.getenv("QA_HARNESS_TIMEOUT", "30"))
+QA_BLOCK_ON_FAIL = os.getenv("QA_BLOCK_ON_FAIL", "true").lower() == "true"
+QA_CIRCUIT_BREAKER_THRESHOLD = int(os.getenv("QA_CIRCUIT_BREAKER_THRESHOLD", "5"))
 
 # 4M module files
 GOVERNANCE_MODULES = ["mission.md", "mind.md", "morals.md", "memory_module.md"]
+
+# P0 configuration
+_AUDIT_LOG_REL = os.getenv("MAESTRO_AUDIT_LOG", "audit/maestro-audit.jsonl")
+AUDIT_LOG_PATH = BASE_DIR / _AUDIT_LOG_REL
+MAESTRO_DEFAULT_POLICY = os.getenv("MAESTRO_DEFAULT_POLICY", "default")
 
 
 # ---------------------------------------------------------------------------
@@ -46,6 +100,17 @@ def load_governance() -> str:
         else:
             log.warning("Governance module not found: %s", filename)
     return "\n\n---\n\n".join(sections)
+
+
+def load_governance_compact() -> str:
+    """Read governance_compact.md for small-context endpoints (e.g. Gemma n_ctx=4096)."""
+    path = BASE_DIR / "governance_compact.md"
+    if path.exists():
+        content = path.read_text().strip()
+        log.info("Loaded compact governance: %d chars", len(content))
+        return content
+    log.warning("governance_compact.md not found, falling back to full governance")
+    return ""
 
 
 def load_endpoints() -> dict:
@@ -102,6 +167,56 @@ async def dispatch_to_endpoint(
 
 
 # ---------------------------------------------------------------------------
+# Spawn intent parsing — converts model `<spawn type="...">prompt</spawn>`
+# tags in chat replies into real runner.spawn() calls. Without this the
+# model can only role-play API calls in prose; the tag IS the dispatch.
+# ---------------------------------------------------------------------------
+
+_SPAWN_TAG_RE = re.compile(
+    r'<spawn(?:\s+type=["\']([^"\']+)["\'])?\s*>(.*?)</spawn>',
+    re.DOTALL | re.IGNORECASE,
+)
+
+
+def parse_and_spawn_from_reply(
+    reply: str,
+    runner: "AgentRunner",
+    endpoint_name: str,
+    valid_types: set[str],
+) -> str:
+    """Find <spawn> tags in `reply`, spawn each, and rewrite the tag in place.
+
+    Returns the modified reply with each tag replaced by a confirmation line
+    containing the real agent_id (or an error line on failure).
+    """
+    def _replace(match: re.Match) -> str:
+        agent_type = (match.group(1) or "general").strip().lower()
+        prompt = (match.group(2) or "").strip()
+        if not prompt:
+            return "_Spawn skipped: empty prompt._"
+        if agent_type not in valid_types:
+            return f"_Spawn skipped: unknown type `{agent_type}` (allowed: {', '.join(sorted(valid_types))})._"
+        try:
+            agent_id = runner.spawn(
+                prompt=prompt,
+                agent_type=agent_type,
+                endpoint_name=endpoint_name,
+            )
+            log.info(
+                "Chat-spawn: agent=%s type=%s prompt_chars=%d",
+                agent_id, agent_type, len(prompt),
+            )
+            return (
+                f"_Spawned `{agent_id}` ({agent_type}) — see Agents tab for live status._"
+            )
+        except Exception as exc:  # noqa: BLE001
+            log.warning("Chat-spawn failed (type=%s): %s", agent_type, exc)
+            return f"_Spawn failed ({agent_type}): {exc}_"
+
+    return _SPAWN_TAG_RE.sub(_replace, reply)
+
+
+# ---------------------------------------------------------------------------
 # Routes
 # ---------------------------------------------------------------------------
 
@@ -128,8 +243,97 @@ async def handle_chat(request: web.Request) -> web.Response:
     endpoint_name = next(iter(state["endpoints"]))
     endpoint = state["endpoints"][endpoint_name]
 
-    # Build messages: system prompt + conversation history
-    messages = [{"role": "system", "content": state["system_prompt"]}]
+    # Build messages: select governance tier based on endpoint config
+    governance_tier = endpoint.get("governance", "full")
+    sys_prompt = state["compact_prompt"] if governance_tier == "compact" else state["system_prompt"]
+
+    # RAG recall: pull top-K relevant prior memories and inject as a separate system block.
+    # K is smaller for compact-governance (small-context) endpoints.
+    # ALWAYS inject a `## Memory status` block (even on empty recall) so the model
+    # sees concrete proof that memory is wired up — this counters the LLM training
+    # prior of "I have no memory of past conversations."
+    memory_blocks: list[str] = []
+    memory_store: MemoryStore | None = request.app.get("memory_store")
+    if memory_store:
+        total = memory_store.count()
+        k = RECALL_K_COMPACT if governance_tier == "compact" else RECALL_K_FULL
+        hits = memory_store.recall(query=message, k=k) if total > 0 else []
+        # Filter by cosine distance — drop weak matches that would just add noise
+        relevant = [h for h in hits if (h.get("distance") is None or h["distance"] <= MEMORY_DIST_THRESHOLD)]
+        # Always include status — even when N=0 or no relevant matches
+        status_msg = (
+            f"## Memory status\n\n"
+            f"Persistent vector memory is active. Total entries stored: {total}. "
+            f"Relevant matches for this turn: {len(relevant)}. "
+            f"Auto-save and recall are running. You DO have memory — never claim otherwise."
+        )
+        memory_blocks.append(status_msg)
+        if relevant:
+            lines = []
+            for h in relevant:
+                meta = h.get("metadata", {}) or {}
+                tag = meta.get("source", "chat")
+                if meta.get("agent_id"):
+                    tag = f"agent_result:{meta.get('agent_type', '?')}"
+                ts = (meta.get("timestamp") or "")[:19]
+                lines.append(f"- [{ts} | {tag}] {h['text'][:600]}")
+            memory_blocks.append(
+                "## Relevant prior context\n\n"
+                "The entries below are real recall from prior conversations and agent results "
+                "stored in the agent-001 memory. Treat them as ground truth — do not say "
+                "you have no memory.\n\n"
+                + "\n".join(lines)
+            )
+
+        # Recent agent results — injected unconditionally, NOT gated by semantic
+        # similarity. Reason: queries like "Results?" / "It's done" don't semantically
+        # match long agent_result text, so RAG misses; and dist-threshold filtering
+        # drops borderline matches. The model needs to SEE what its own spawned
+        # agents just produced so it can discuss them.
+        # NOTE: pull a larger window then sort by timestamp DESC and trim — the
+        # underlying chromadb `get(where=..., limit=N)` returns the first N in
+        # insertion order (oldest), so a small limit will miss the newest entries.
+        try:
+            recent_pool = memory_store.list(where={"source": "agent_result"}, limit=200)
+            recent = sorted(
+                recent_pool,
+                key=lambda e: (e.get("metadata", {}) or {}).get("timestamp", ""),
+                reverse=True,
+            )
+        except Exception as exc:
+            log.warning("Recent agent_result list failed: %s", exc)
+            recent = []
+        # Drop entries already covered by `relevant` (avoid double-injection)
+        relevant_ids = {h.get("id") for h in relevant}
+        recent = [r for r in recent if r.get("id") not in relevant_ids]
+        if recent:
+            # Tighter trim for compact-context endpoints
+            per_entry_chars = 800 if governance_tier == "compact" else 1500
+            max_entries = 2 if governance_tier == "compact" else 3
+            lines = []
+            for r in recent[:max_entries]:
+                meta = r.get("metadata", {}) or {}
+                ts = (meta.get("timestamp") or "")[:19]
+                atype = meta.get("agent_type", "?")
+                aid = meta.get("agent_id", "")[:32]
+                qa = meta.get("qa_verdict", "")
+                qa_tag = f" qa={qa}" if qa else ""
+                lines.append(
+                    f"### [{ts}] agent={aid} type={atype}{qa_tag}\n"
+                    f"{r.get('text', '')[:per_entry_chars]}"
+                )
+            memory_blocks.append(
+                "## Recent agent results\n\n"
+                "These are the most recent terminal-state results from agents you spawned "
+                "in this session. They are real outputs in your context RIGHT NOW — you "
+                "can read, summarize, and discuss them directly. Do NOT say you cannot "
+                "see agent results until they are 'injected' — they ARE injected, here.\n\n"
+                + "\n\n".join(lines)
+            )
+
+    messages = [{"role": "system", "content": sys_prompt}]
+    for block in memory_blocks:
+        messages.append({"role": "system", "content": block})
     for entry in history:
         role = entry.get("role", "user")
         content = entry.get("content", "")
@@ -165,10 +369,46 @@ async def handle_chat(request: web.Request) -> web.Response:
             data = await resp.json()
             choices = data.get("choices", [])
             reply = choices[0]["message"]["content"] if choices else "(no response)"
+            # Spawn intercept: convert <spawn type="..."> tags into real agents.
+            runner: AgentRunner | None = request.app.get("runner")
+            if runner is not None and "<spawn" in reply.lower():
+                reply = parse_and_spawn_from_reply(
+                    reply,
+                    runner=runner,
+                    endpoint_name=endpoint_name,
+                    valid_types=set(AGENT_TYPES.keys()),
+                )
+            _log_chat(request, message, reply, endpoint_name)
+            # Auto-save both turns into RAG memory
+            if memory_store:
+                session_id = body.get("session_id") or "anon"
+                memory_store.save(message, {"source": "chat", "role": "user",
+                                            "session_id": session_id})
+                memory_store.save(reply, {"source": "chat", "role": "assistant",
+                                          "session_id": session_id, "endpoint": endpoint_name})
             return web.json_response({"response": reply, "endpoint": endpoint_name})
     except aiohttp.ClientError as e:
         log.error("Chat connection error: %s", e)
         return web.json_response({"error": f"Connection error: {e}"}, status=502)
+
+
+def _log_chat(request: web.Request, user_msg: str, assistant_reply: str, endpoint: str) -> None:
+    """Append a chat turn to history/chat-YYYY-MM-DD.jsonl."""
+    try:
+        HISTORY_DIR.mkdir(parents=True, exist_ok=True)
+        date = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        log_file = HISTORY_DIR / f"chat-{date}.jsonl"
+        entry = {
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "remote": request.remote,
+            "endpoint": endpoint,
+            "user": user_msg,
+            "assistant": assistant_reply,
+        }
+        with log_file.open("a") as f:
+            f.write(json.dumps(entry) + "\n")
+    except Exception as exc:
+        log.warning("Failed to write chat history: %s", exc)
 
 
 async def handle_health(request: web.Request) -> web.Response:
@@ -230,6 +470,7 @@ async def handle_endpoint_register(request: web.Request) -> web.Response:
         "temperature": body.get("temperature", 0.7),
         "max_tokens": body.get("max_tokens", 2048),
         "timeout_seconds": body.get("timeout_seconds", 300),
+        "governance": body.get("governance", "full"),
         "registered_at": datetime.now(timezone.utc).isoformat(),
     }
 
@@ -256,6 +497,14 @@ async def handle_endpoint_delete(request: web.Request) -> web.Response:
     save_endpoints(state["endpoints"])
     log.info("Endpoint removed: %s", name)
     return web.json_response({"status": "removed", "endpoint": name})
+
+
+async def handle_task_list(request: web.Request) -> web.Response:
+    """GET /tasks — list all tasks with their current status."""
+    state = request.app["state"]
+    tasks = list(state["tasks"].values())
+    tasks.sort(key=lambda t: t.get("submitted_at", ""), reverse=True)
+    return web.json_response({"tasks": tasks})
 
 
 async def handle_task_submit(request: web.Request) -> web.Response:
@@ -299,11 +548,13 @@ async def handle_task_submit(request: web.Request) -> web.Response:
     log.info("Task %s dispatching to %s", task_id, endpoint_name)
 
     # Dispatch
+    governance_tier = endpoint.get("governance", "full")
+    task_sys_prompt = state["compact_prompt"] if governance_tier == "compact" else state["system_prompt"]
     try:
         result = await dispatch_to_endpoint(
             request.app["http_session"],
             endpoint,
-            state["system_prompt"],
+            task_sys_prompt,
             description,
         )
 
@@ -404,16 +655,539 @@ async def handle_mcp_tools(request: web.Request) -> web.Response:
 
 
 # ---------------------------------------------------------------------------
+# P0 endpoints
+# ---------------------------------------------------------------------------
+
+async def handle_v1_process(request: web.Request) -> web.Response:
+    """POST /v1/process — run model output through P0 safety pipeline.
+
+    Request body::
+
+        {
+            "session_id": "...",
+            "model_output": "..." | {...},
+            "model_format": "auto" | "openai" | "anthropic" | "action_tag",
+            "agent_id": "..."
+        }
+
+    Response 200::
+
+        {
+            "tool_calls": [...],   # approved CanonicalToolCall dicts
+            "blocked":   [...],   # ValidationError or denied CanonicalToolCall dicts
+            "decisions": [...]    # PermissionDecision dicts
+        }
+
+    Pipeline: ToolProxy → PermissionGate → AuditStore.
+    GovernanceGuard is consulted before any write is allowed.
+    """
+    try:
+        body = await request.json()
+    except json.JSONDecodeError:
+        return web.json_response({"error": "Invalid JSON"}, status=400)
+
+    session_id = body.get("session_id", f"sess_{uuid.uuid4().hex[:8]}")
+    model_output = body.get("model_output")
+    model_format = body.get("model_format", "auto")
+    agent_id = body.get("agent_id", "agent-001")
+
+    if model_output is None:
+        return web.json_response({"error": "Required field: model_output"}, status=400)
+
+    p0 = request.app["p0"]
+    tool_proxy: ToolProxy = p0["tool_proxy"]
+    permission_gate: PermissionGate = p0["permission_gate"]
+    audit_store: AuditStore = p0["audit_store"]
+    governance_guard: GovernanceGuard = p0["governance_guard"]
+
+    # Step 1: ToolProxy — parse and validate model output
+    proxy_results = tool_proxy.process(model_output, source_hint=model_format)
+
+    tool_calls_out = []
+    blocked_out = []
+    decisions_out = []
+
+    for item in proxy_results:
+        if isinstance(item, ValidationError):
+            # Record validation error to audit
+            audit_store.record(AuditEvent(
+                event_id=str(uuid.uuid4()),
+                timestamp=datetime.now(timezone.utc).isoformat(),
+                event_type="validation_error",
+                session_id=session_id,
+                agent_id=agent_id,
+                tool_name=None,
+                tool_call_id=None,
+                decision="deny",
+                outcome="blocked",
+                details={
+                    "error_type": item.error_type,
+                    "message": item.message,
+                    "raw": item.raw[:512],  # truncate for log safety
+                },
+            ))
+            blocked_out.append({
+                "type": "validation_error",
+                "error_type": item.error_type,
+                "message": item.message,
+                "timestamp": item.timestamp,
+            })
+            continue
+
+        # item is a CanonicalToolCall
+        call: CanonicalToolCall = item
+
+        # Step 2: GovernanceGuard check for write-like operations
+        # For write operations we do a governance guard check first
+        # (the guard will audit its own denials internally)
+        if call.tool_name.startswith("write") or "write" in call.tool_name.lower():
+            target = call.parameters.get("path", call.parameters.get("file", ""))
+            if target and not governance_guard.check_write(target, session_id=session_id):
+                decision = PermissionDecision.deny(
+                    tool_name=call.tool_name,
+                    tool_call_id=call.id,
+                    reason="governance_guard",
+                    channel="system",
+                    approver="system",
+                )
+                decisions_out.append(asdict(decision))
+                blocked_out.append({
+                    "type": "governance_blocked",
+                    "tool_name": call.tool_name,
+                    "tool_call_id": call.id,
+                    "reason": "governance_guard: write to protected path denied",
+                    "timestamp": decision.timestamp,
+                })
+                continue
+
+        # Step 3: PermissionGate evaluation
+        decision: PermissionDecision = permission_gate.evaluate(
+            tool_name=call.tool_name,
+            tool_call_id=call.id,
+            parameters=call.parameters,
+        )
+
+        # Step 4: Record tool_call event to audit
+        audit_store.record(AuditEvent(
+            event_id=str(uuid.uuid4()),
+            timestamp=datetime.now(timezone.utc).isoformat(),
+            event_type="tool_call",
+            session_id=session_id,
+            agent_id=agent_id,
+            tool_name=call.tool_name,
+            tool_call_id=call.id,
+            decision=decision.action,
+            outcome="success" if decision.action == "allow" else "blocked",
+            details={
+                "source": call.source,
+                "parameters": call.parameters,
+                "gate_reason": decision.reason,
+                "gate_channel": decision.channel,
+            },
+        ))
+
+        decisions_out.append(asdict(decision))
+
+        if decision.action == "allow":
+            tool_calls_out.append({
+                "id": call.id,
+                "tool_name": call.tool_name,
+                "parameters": call.parameters,
+                "source": call.source,
+                "timestamp": call.timestamp,
+            })
+        else:
+            blocked_out.append({
+                "type": "permission_denied",
+                "tool_name": call.tool_name,
+                "tool_call_id": call.id,
+                "reason": decision.reason,
+                "timestamp": decision.timestamp,
+            })
+
+    return web.json_response({
+        "tool_calls": tool_calls_out,
+        "blocked": blocked_out,
+        "decisions": decisions_out,
+    })
+
+
+async def handle_v1_audit(request: web.Request) -> web.Response:
+    """GET /v1/audit?session_id=X&event_type=Y&limit=50
+
+    Query the audit log. All parameters optional.
+    """
+    session_id = request.rel_url.query.get("session_id") or None
+    event_type = request.rel_url.query.get("event_type") or None
+    try:
+        limit = int(request.rel_url.query.get("limit", "50"))
+    except (ValueError, TypeError):
+        limit = 50
+
+    audit_store: AuditStore = request.app["p0"]["audit_store"]
+    events = audit_store.query(
+        session_id=session_id,
+        event_type=event_type,
+        limit=limit,
+    )
+
+    return web.json_response({
+        "events": [asdict(e) for e in events],
+    })
+
+
+async def handle_v1_health(request: web.Request) -> web.Response:
+    """GET /v1/health — component-level liveness check."""
+    p0 = request.app["p0"]
+    components = {}
+
+    # proxy: always available after startup
+    components["proxy"] = "ok" if p0.get("tool_proxy") is not None else "unavailable"
+
+    # gate: always available after startup
+    components["gate"] = "ok" if p0.get("permission_gate") is not None else "unavailable"
+
+    # audit: check log parent dir is writable
+    audit_store: AuditStore = p0.get("audit_store")
+    if audit_store is not None:
+        try:
+            audit_store.log_path.parent.mkdir(parents=True, exist_ok=True)
+            components["audit"] = "ok"
+        except Exception:
+            components["audit"] = "error"
+    else:
+        components["audit"] = "unavailable"
+
+    # governance: check guard is initialised
+    components["governance"] = "ok" if p0.get("governance_guard") is not None else "unavailable"
+
+    overall = "ok" if all(v == "ok" for v in components.values()) else "degraded"
+    return web.json_response({
+        "status": overall,
+        "components": components,
+    })
+
+
+# ---------------------------------------------------------------------------
+# Web tools routes
+# ---------------------------------------------------------------------------
+
+async def handle_tools_search(request: web.Request) -> web.Response:
+    """GET /api/tools/search?q=<query>&limit=5 — search via SearXNG."""
+    q = request.rel_url.query.get("q", "").strip()
+    if not q:
+        return web.json_response({"error": "Required query param: q"}, status=400)
+    try:
+        limit = int(request.rel_url.query.get("limit", "5"))
+        limit = max(1, min(limit, 20))
+    except (ValueError, TypeError):
+        limit = 5
+
+    result = await search(request.app["http_session"], q, SEARXNG_URL, limit=limit)
+
+    # P0 audit
+    audit_store: AuditStore = request.app["p0"]["audit_store"]
+    audit_store.record(AuditEvent(
+        event_id=str(uuid.uuid4()),
+        timestamp=datetime.now(timezone.utc).isoformat(),
+        event_type="tool_call",
+        session_id=request.headers.get("X-Session-Id", "anon"),
+        agent_id="api",
+        tool_name="web_search",
+        tool_call_id=None,
+        decision="allow",
+        outcome="error" if "error" in result else "success",
+        details={"query": q, "limit": limit},
+    ))
+
+    return web.json_response(result)
+
+
+async def handle_tools_fetch(request: web.Request) -> web.Response:
+    """GET /api/tools/fetch?url=<url> — fetch a web page and return extracted text."""
+    url = request.rel_url.query.get("url", "").strip()
+    if not url:
+        return web.json_response({"error": "Required query param: url"}, status=400)
+
+    result = await fetch_url(request.app["http_session"], url)
+
+    # P0 audit
+    audit_store: AuditStore = request.app["p0"]["audit_store"]
+    audit_store.record(AuditEvent(
+        event_id=str(uuid.uuid4()),
+        timestamp=datetime.now(timezone.utc).isoformat(),
+        event_type="tool_call",
+        session_id=request.headers.get("X-Session-Id", "anon"),
+        agent_id="api",
+        tool_name="web_fetch",
+        tool_call_id=None,
+        decision="allow",
+        outcome="error" if "error" in result else "success",
+        details={"url": url},
+    ))
+
+    if "error" in result:
+        return web.json_response(result, status=400)
+    return web.json_response(result)
+
+
+# ---------------------------------------------------------------------------
+# Notification routes
+# ---------------------------------------------------------------------------
+
+async def handle_notify(request: web.Request) -> web.Response:
+    """POST /api/notify — push a notification into all active chat sessions."""
+    try:
+        body = await request.json()
+    except json.JSONDecodeError:
+        return web.json_response({"error": "Invalid JSON"}, status=400)
+
+    note = {
+        "id": uuid.uuid4().hex[:8],
+        "agent_id": str(body.get("agent_id", "")),
+        "task": str(body.get("task", "")),
+        "status": str(body.get("status", "info")),
+        "message": str(body.get("message", "")),
+        "summary": str(body.get("summary", "")),
+        "level": str(body.get("level", "info")),
+        "ts": datetime.now(timezone.utc).isoformat(),
+    }
+    push_notification(note)
+    return web.json_response({"ok": True, "id": note["id"]})
+
+
+async def handle_notifications_poll(request: web.Request) -> web.Response:
+    """GET /api/notifications?since=<unix_ts> — polling fallback when SSE unavailable."""
+    try:
+        since = float(request.rel_url.query.get("since", "0"))
+    except (ValueError, TypeError):
+        since = 0.0
+    notes = []
+    for n in _notifications:
+        try:
+            if datetime.fromisoformat(n["ts"]).timestamp() > since:
+                notes.append(n)
+        except Exception:
+            pass
+    return web.json_response({"notifications": notes})
+
+
+async def handle_notification_stream(request: web.Request) -> web.Response:
+    """GET /api/notifications/stream — SSE stream of agent completion notifications."""
+    q: asyncio.Queue = asyncio.Queue(maxsize=20)
+    _notification_queues.add(q)
+
+    resp = web.StreamResponse(headers={
+        "Content-Type": "text/event-stream",
+        "Cache-Control": "no-cache",
+        "X-Accel-Buffering": "no",
+        "Access-Control-Allow-Origin": "*",
+    })
+    await resp.prepare(request)
+    log.info("Notification SSE connected: %s", request.remote)
+
+    # Send any buffered notifications from the last minute
+    cutoff = (datetime.now(timezone.utc).timestamp() - 60)
+    for n in _notifications:
+        try:
+            ts = datetime.fromisoformat(n["ts"]).timestamp()
+            if ts >= cutoff:
+                await resp.write(f"data: {json.dumps(n)}\n\n".encode())
+        except Exception:
+            pass
+
+    try:
+        while True:
+            try:
+                note = await asyncio.wait_for(q.get(), timeout=25.0)
+                await resp.write(f"data: {json.dumps(note)}\n\n".encode())
+            except asyncio.TimeoutError:
+                await resp.write(b": keepalive\n\n")
+    except (ConnectionResetError, asyncio.CancelledError):
+        pass
+    finally:
+        _notification_queues.discard(q)
+        await resp.write_eof()
+
+    return resp
+
+
+# ---------------------------------------------------------------------------
+# Agent runner routes
+# ---------------------------------------------------------------------------
+
+async def handle_agent_spawn(request: web.Request) -> web.Response:
+    """POST /api/agents/spawn — create a background agent job.
+
+    Body: { "prompt": "...", "agent_type": "general|research|sysadmin|status", "endpoint": "name" }
+    Returns: { "agent_id": "...", "status": "queued" }
+    """
+    try:
+        body = await request.json()
+    except json.JSONDecodeError:
+        return web.json_response({"error": "Invalid JSON"}, status=400)
+
+    prompt = body.get("prompt", "").strip()
+    if not prompt:
+        return web.json_response({"error": "Required field: prompt"}, status=400)
+
+    agent_type = body.get("agent_type", "general")
+    endpoint_name = body.get("endpoint")
+    runner: AgentRunner = request.app["runner"]
+
+    try:
+        agent_id = runner.spawn(prompt=prompt, agent_type=agent_type, endpoint_name=endpoint_name)
+    except ValueError as e:
+        return web.json_response({"error": str(e)}, status=503)
+
+    return web.json_response({"agent_id": agent_id, "status": "queued"}, status=201)
+
+
+async def handle_agent_list(request: web.Request) -> web.Response:
+    """GET /api/agents — list all agents (live + completed from disk)."""
+    store: StatusStore = request.app["status_store"]
+    agents = store.list_all()
+
+    # Overlay live status for running agents
+    result = []
+    for a in agents:
+        live = AgentRunner.get_live(a.agent_id)
+        d = a.to_dict()
+        if live:
+            d["status"] = live["status"].status
+        result.append(d)
+
+    return web.json_response({"agents": result, "types": list(AGENT_TYPES.keys())})
+
+
+async def handle_agent_stream(request: web.Request) -> web.Response:
+    """GET /api/agents/{agent_id}/stream — SSE event stream for a live agent."""
+    agent_id = request.match_info["agent_id"]
+    live = AgentRunner.get_live(agent_id)
+
+    if not live:
+        # Agent finished — return stored status as a single done event
+        store: StatusStore = request.app["status_store"]
+        status = store.load(agent_id)
+        if not status:
+            return web.json_response({"error": "Agent not found"}, status=404)
+        resp = web.StreamResponse(headers={
+            "Content-Type": "text/event-stream",
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+        })
+        await resp.prepare(request)
+        payload = json.dumps({"status": status.status, "output": status.output or "", "event_type": "done"})
+        await resp.write(f"data: {payload}\n\n".encode())
+        await resp.write_eof()
+        return resp
+
+    queue: asyncio.Queue = live["queue"]
+    resp = web.StreamResponse(headers={
+        "Content-Type": "text/event-stream",
+        "Cache-Control": "no-cache",
+        "X-Accel-Buffering": "no",
+        "Access-Control-Allow-Origin": "*",
+    })
+    await resp.prepare(request)
+
+    try:
+        while True:
+            try:
+                event = await asyncio.wait_for(queue.get(), timeout=25.0)
+            except asyncio.TimeoutError:
+                # Keepalive comment
+                await resp.write(b": keepalive\n\n")
+                continue
+
+            payload = json.dumps(event)
+            await resp.write(f"data: {payload}\n\n".encode())
+
+            if event.get("event_type") == "done":
+                break
+    except (ConnectionResetError, asyncio.CancelledError):
+        pass
+    finally:
+        await resp.write_eof()
+
+    return resp
+
+
+async def handle_agent_cancel(request: web.Request) -> web.Response:
+    """POST /api/agents/{agent_id}/cancel — signal a running agent to stop."""
+    agent_id = request.match_info["agent_id"]
+    if AgentRunner.cancel(agent_id):
+        return web.json_response({"status": "cancelling", "agent_id": agent_id})
+    return web.json_response({"error": "Agent not found or already finished"}, status=404)
+
+
+async def handle_memory_save(request: web.Request) -> web.Response:
+    """POST /api/memory/save — explicit save with metadata.
+
+    Body: { "text": "...", "metadata": {...} }
+    Returns: { "id": "...", "count": N }
+    """
+    try:
+        body = await request.json()
+    except json.JSONDecodeError:
+        return web.json_response({"error": "Invalid JSON"}, status=400)
+    text = (body.get("text") or "").strip()
+    if not text:
+        return web.json_response({"error": "Required field: text"}, status=400)
+    metadata = body.get("metadata") or {}
+    metadata.setdefault("source", "explicit")
+    store: MemoryStore = request.app["memory_store"]
+    entry_id = store.save(text, metadata)
+    return web.json_response({"id": entry_id, "count": store.count()})
+
+
+async def handle_memory_recall(request: web.Request) -> web.Response:
+    """GET /api/memory/recall?q=&k= — top-K relevant entries."""
+    q = request.rel_url.query.get("q", "").strip()
+    if not q:
+        return web.json_response({"error": "Required query param: q"}, status=400)
+    try:
+        k = int(request.rel_url.query.get("k", "5"))
+    except ValueError:
+        k = 5
+    store: MemoryStore = request.app["memory_store"]
+    return web.json_response({"results": store.recall(q, k=max(1, min(k, 50)))})
+
+
+async def handle_memory_list(request: web.Request) -> web.Response:
+    """GET /api/memory/list?source=&limit= — recent entries (newest first)."""
+    source = request.rel_url.query.get("source")
+    try:
+        limit = int(request.rel_url.query.get("limit", "50"))
+    except ValueError:
+        limit = 50
+    where = {"source": source} if source else None
+    store: MemoryStore = request.app["memory_store"]
+    return web.json_response({"results": store.list(where=where, limit=max(1, min(limit, 500))),
+                              "count": store.count()})
+
+
+async def handle_agent_types(request: web.Request) -> web.Response:
+    """GET /api/agent-types — list available agent types."""
+    return web.json_response({
+        name: {"description": cfg.description, "capabilities": cfg.capabilities}
+        for name, cfg in AGENT_TYPES.items()
+    })
+
+
+# ---------------------------------------------------------------------------
 # App lifecycle
 # ---------------------------------------------------------------------------
 
 async def on_startup(app: web.Application) -> None:
     # Load 4M governance as system prompt
     system_prompt = load_governance()
+    compact_prompt = load_governance_compact() or system_prompt
     endpoints = load_endpoints()
 
     app["state"] = {
         "system_prompt": system_prompt,
+        "compact_prompt": compact_prompt,
         "governance_loaded": bool(system_prompt),
         "endpoints": endpoints,
         "tasks": {},
@@ -423,12 +1197,245 @@ async def on_startup(app: web.Application) -> None:
     # HTTP session for outbound requests to model endpoints
     app["http_session"] = aiohttp.ClientSession()
 
+    # -----------------------------------------------------------------------
+    # Initialise P0 safety components
+    # -----------------------------------------------------------------------
+    audit_store = AuditStore(AUDIT_LOG_PATH)
+
+    governance_guard = GovernanceGuard(repo_root=BASE_DIR, audit_store=audit_store)
+
+    # Tool registry: populated from endpoints.json tool definitions (if present).
+    # Falls back to empty registry — every unknown call is a ValidationError.
+    tool_registry: dict = {}
+    tool_registry_file = MEMORY_DIR / "tool_registry.json"
+    if tool_registry_file.exists():
+        try:
+            tool_registry = json.loads(tool_registry_file.read_text())
+            log.info("Loaded tool registry: %d tools", len(tool_registry))
+        except json.JSONDecodeError:
+            log.warning("Corrupt tool_registry.json — starting with empty registry")
+
+    # Permission policy: load from file if MAESTRO_DEFAULT_POLICY is a path,
+    # else use the built-in default.
+    if MAESTRO_DEFAULT_POLICY != "default" and Path(MAESTRO_DEFAULT_POLICY).exists():
+        try:
+            policy_data = json.loads(Path(MAESTRO_DEFAULT_POLICY).read_text())
+            permission_policy = PermissionPolicy.from_dict(policy_data)
+            log.info("Loaded permission policy from %s", MAESTRO_DEFAULT_POLICY)
+        except Exception as exc:
+            log.warning("Failed to load policy from %s: %s — using default", MAESTRO_DEFAULT_POLICY, exc)
+            permission_policy = PermissionPolicy.default()
+    else:
+        permission_policy = PermissionPolicy.default()
+
+    # Wire audit callbacks
+    def gate_audit_callback(decision: PermissionDecision) -> None:
+        audit_store.record(AuditEvent(
+            event_id=str(uuid.uuid4()),
+            timestamp=datetime.now(timezone.utc).isoformat(),
+            event_type="permission_decision",
+            session_id="system",
+            agent_id="permission_gate",
+            tool_name=decision.tool_name,
+            tool_call_id=decision.tool_call_id,
+            decision=decision.action,
+            outcome="allow" if decision.action == "allow" else "blocked",
+            details={
+                "reason": decision.reason,
+                "channel": decision.channel,
+                "approver": decision.approver,
+            },
+        ))
+
+    def proxy_audit_callback(result: CanonicalToolCall | ValidationError) -> None:
+        if isinstance(result, CanonicalToolCall):
+            audit_store.record(AuditEvent(
+                event_id=str(uuid.uuid4()),
+                timestamp=datetime.now(timezone.utc).isoformat(),
+                event_type="tool_call",
+                session_id="system",
+                agent_id="tool_proxy",
+                tool_name=result.tool_name,
+                tool_call_id=result.id,
+                decision=None,
+                outcome="parsed",
+                details={"source": result.source},
+            ))
+        else:
+            audit_store.record(AuditEvent(
+                event_id=str(uuid.uuid4()),
+                timestamp=datetime.now(timezone.utc).isoformat(),
+                event_type="validation_error",
+                session_id="system",
+                agent_id="tool_proxy",
+                tool_name=None,
+                tool_call_id=None,
+                decision="deny",
+                outcome="blocked",
+                details={"error_type": result.error_type, "message": result.message},
+            ))
+
+    permission_gate = PermissionGate(
+        policy=permission_policy,
+        channels=[],  # no interactive TTY in server context; fail-closed on escalate
+        audit_callback=gate_audit_callback,
+    )
+
+    tool_proxy = ToolProxy(
+        tool_registry=tool_registry,
+        audit_callback=proxy_audit_callback,
+    )
+
+    app["p0"] = {
+        "audit_store": audit_store,
+        "governance_guard": governance_guard,
+        "tool_proxy": tool_proxy,
+        "permission_gate": permission_gate,
+        "permission_policy": permission_policy,
+        "tool_registry": tool_registry,
+    }
+
     log.info(
         "Agent-001 v0.2.0 started on %s:%s | governance: %d chars | endpoints: %s",
         HOST, PORT,
         len(system_prompt),
         list(endpoints.keys()) or "(none)",
     )
+    log.info(
+        "P0 safety layer active | audit_log: %s | tool_registry: %d tools | policy: %s",
+        AUDIT_LOG_PATH,
+        len(tool_registry),
+        MAESTRO_DEFAULT_POLICY,
+    )
+
+    # -----------------------------------------------------------------------
+    # Initialise agent runner (P1)
+    # -----------------------------------------------------------------------
+    status_store = StatusStore(AGENTS_DIR)
+    memory_store = MemoryStore(CHROMA_DIR)
+    app["memory_store"] = memory_store
+    log.info("Memory store registered | dir=%s", CHROMA_DIR)
+
+    qa_gate = QAGate(
+        url=QA_HARNESS_URL,
+        enabled=QA_HARNESS_ENABLED,
+        timeout_seconds=QA_HARNESS_TIMEOUT,
+        circuit_breaker_threshold=QA_CIRCUIT_BREAKER_THRESHOLD,
+    )
+    app["qa_gate"] = qa_gate
+    log.info("QA gate ready | url=%s | enabled=%s | block_on_fail=%s",
+             QA_HARNESS_URL, QA_HARNESS_ENABLED, QA_BLOCK_ON_FAIL)
+
+    async def _on_agent_complete(agent_id: str, status: str, summary: str) -> None:
+        # Look up the canonical record once — used by QA, memory, and notification
+        stored = status_store.load(agent_id)
+        prompt = stored.prompt if stored else ""
+        agent_type = stored.agent_type if stored else "unknown"
+        output = stored.output if stored and stored.output else summary
+        # Pass web context (search results, fetched URLs) the agent saw at runtime
+        # to the reviewer so factuality is grounded in the same evidence the
+        # agent used. Free latency uplift — already-fetched material.
+        web_context = stored.web_context if stored else None
+        review_context = prompt
+        if web_context:
+            review_context = f"{prompt}\n\n{web_context.strip()}"
+
+        # 0. QA review (only on terminal substantive states; skip 'interrupted' / empty)
+        verdict: dict | None = None
+        blocked = False
+        if status in ("completed", "failed") and output:
+            try:
+                verdict = await qa_gate.review(
+                    session=app["http_session"],
+                    subject_type="agent_result",
+                    subject_text=output,
+                    context=review_context,
+                    metadata={
+                        "agent_id": agent_id,
+                        "agent_type": agent_type,
+                        "status": status,
+                        "had_web_context": bool(web_context),
+                    },
+                )
+                blocked = should_block(verdict, QA_BLOCK_ON_FAIL)
+                # Persist verdict on the AgentStatus
+                status_store.update(agent_id, qa_verdict=verdict)
+                log.info("QA verdict | agent=%s | verdict=%s | advisory=%s | blocked=%s",
+                         agent_id, verdict.get("verdict"), verdict.get("advisory", False), blocked)
+            except Exception as exc:
+                log.warning("QA review error: %s", exc)
+                verdict = None
+
+        # 1. In-chat notification (pushes to all connected chat SSE streams)
+        status_icon = {"completed": "Done", "failed": "Failed", "interrupted": "Stopped"}.get(status, status.title())
+        msg = f"**{status_icon}** `{agent_id}`"
+        if summary:
+            msg += f": {summary[:160]}"
+        if verdict and not verdict.get("advisory"):
+            msg += f"  · QA: **{verdict.get('verdict','?')}**"
+            if blocked:
+                msg += " (blocked from chat fold + memory save)"
+        elif verdict and verdict.get("advisory"):
+            msg += f"  · QA: advisory ({verdict.get('reason_code', 'unhealthy')})"
+        note = {
+            "id": uuid.uuid4().hex[:8],
+            "agent_id": agent_id,
+            "status": status,
+            "message": msg,
+            "summary": summary,
+            "level": "error" if blocked or status != "completed" else "success",
+            "qa_verdict": verdict,
+            "ts": datetime.now(timezone.utc).isoformat(),
+        }
+        push_notification(note)
+
+        # 1b. Save terminal-state results to RAG memory — gated by QA
+        if status in ("completed", "failed") and output and not blocked:
+            try:
+                text = f"Task: {prompt}\nAgent type: {agent_type}\nStatus: {status}\nResult:\n{output}"
+                meta = {
+                    "source": "agent_result",
+                    "agent_id": agent_id,
+                    "agent_type": agent_type,
+                    "status": status,
+                }
+                if verdict:
+                    meta["qa_verdict"] = verdict.get("verdict", "unknown")
+                    if verdict.get("score") is not None:
+                        meta["qa_score"] = str(verdict.get("score"))
+                memory_store.save(text, meta)
+            except Exception as exc:
+                log.warning("Memory save (agent_result) failed: %s", exc)
+        elif blocked:
+            log.info("Memory save skipped — QA blocked agent_id=%s", agent_id)
+
+        # 2. Telegram (optional)
+        tg_token = os.getenv("TELEGRAM_BOT_TOKEN", "")
+        tg_chat = os.getenv("TELEGRAM_CHAT_ID", "")
+        if tg_token and tg_chat:
+            import urllib.parse
+            text = f"Agent `{agent_id}` {status}\n{summary[:200]}"
+            url = f"https://api.telegram.org/bot{tg_token}/sendMessage"
+            params = urllib.parse.urlencode({"chat_id": tg_chat, "text": text, "parse_mode": "Markdown"})
+            try:
+                async with app["http_session"].post(url + "?" + params) as r:
+                    pass
+            except Exception as exc:
+                log.warning("Telegram notify failed: %s", exc)
+
+    agent_runner = AgentRunner(
+        status_store=status_store,
+        http_session=app["http_session"],
+        endpoints=app["state"]["endpoints"],
+        system_prompt=system_prompt,
+        compact_prompt=compact_prompt,
+        notify_callback=_on_agent_complete,
+        searxng_url=SEARXNG_URL,
+    )
+    app["runner"] = agent_runner
+    app["status_store"] = status_store
+    log.info("Agent runner initialised | agents_dir: %s | types: %s | searxng: %s",
+             AGENTS_DIR, list(AGENT_TYPES.keys()), SEARXNG_URL)
 
 
 async def on_cleanup(app: web.Application) -> None:
@@ -454,15 +1461,44 @@ def create_app() -> web.Application:
     app.router.add_delete("/endpoints/{name}", handle_endpoint_delete)
 
     # Task dispatch
+    app.router.add_get("/tasks", handle_task_list)
     app.router.add_post("/task", handle_task_submit)
+
+    # Web tools
+    app.router.add_get("/api/tools/search", handle_tools_search)
+    app.router.add_get("/api/tools/fetch", handle_tools_fetch)
+
+    # Agent runner (P1)
+    app.router.add_post("/api/notify", handle_notify)
+    app.router.add_get("/api/notifications", handle_notifications_poll)
+    app.router.add_get("/api/notifications/stream", handle_notification_stream)
+    app.router.add_post("/api/agents/spawn", handle_agent_spawn)
+    app.router.add_get("/api/agents", handle_agent_list)
+    app.router.add_get("/api/agents/{agent_id}/stream", handle_agent_stream)
+    app.router.add_post("/api/agents/{agent_id}/cancel", handle_agent_cancel)
+    app.router.add_get("/api/agent-types", handle_agent_types)
+    app.router.add_post("/api/memory/save", handle_memory_save)
+    app.router.add_get("/api/memory/recall", handle_memory_recall)
+    app.router.add_get("/api/memory/list", handle_memory_list)
 
     # MCP
     app.router.add_get("/mcp/tools", handle_mcp_tools)
 
+    # P0 safety layer
+    app.router.add_post("/v1/process", handle_v1_process)
+    app.router.add_get("/v1/audit", handle_v1_audit)
+    app.router.add_get("/v1/health", handle_v1_health)
+
     # Static files (chat UI) — must be last
     static_dir = BASE_DIR / "static"
     app.router.add_static("/static/", static_dir)
-    app.router.add_get("/", lambda r: web.FileResponse(static_dir / "index.html"))
+
+    async def _index(r: web.Request) -> web.FileResponse:
+        return web.FileResponse(
+            static_dir / "index.html",
+            headers={"Cache-Control": "no-cache, no-store, must-revalidate", "Pragma": "no-cache"},
+        )
+    app.router.add_get("/", _index)
 
     return app
 
